@@ -12,6 +12,11 @@ dependencies = [
     "tifffile>=2025.3.13",
 ]
 
+[dependency-groups]
+dev = [
+    "ruff>=0.11.2",
+]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120
