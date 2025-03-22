@@ -3,18 +3,36 @@ import os
 import tifffile as tiff
 
 
+
 def process_tif(input_file, output_folder, channel_indices):
+    channel_map = {0:"CY5", 1:"RFP", 2:"GFP", 3:"DAPI"}
     file = tiff.TiffReader(input_file)
     zstack = file.asarray()
+    print('parsing file', input_file)
+
     for i, z_slice in enumerate(zstack):
         if z_slice.shape[0] != 4:
+            channel_map = {0:"RFP", 1:"GFP"}
             channel_indices = [0,1]
+
+        channel_names = [channel_map[channel_idx] for channel_idx in channel_indices]
         selected_channels = z_slice[channel_indices]  # Extract channels 2 and 3
         base_name = input_file.split('/')[-1].split('.')[0]
-        clean_file_name = base_name.replace('CY5_RFP_GFP_DAPI_', 'RFP_GFP_').replace('_zstack', '')
-        output_file = os.path.join(output_folder, f"{clean_file_name}_z{i}.tif")
-        with tiff.TiffWriter(output_file, bigtiff=False) as tif:
-            tif.write(selected_channels)
+
+        # conditional renaming
+        if 'CY5_RFP_GFP_DAPI_' in base_name:
+            clean_file_name = base_name.replace('CY5_RFP_GFP_DAPI_', '').replace('_zstack', '')
+        elif 'RFP_GFP_' in base_name:
+            clean_file_name = base_name.replace('RFP_GFP_', '').replace('_zstack', '')
+        else:
+            clean_file_name = base_name
+
+        for idx, channel in enumerate(selected_channels):
+            channel_name = channel_names[idx]
+            output_file = os.path.join(output_folder, f"{clean_file_name}_z{i}_{channel_name}.tif")
+            with tiff.TiffWriter(output_file, bigtiff=False) as tif:
+                tif.write(channel)
+    quit()
 
 def create_output_folder(file):
     folder_name = file.split(".")[0]
