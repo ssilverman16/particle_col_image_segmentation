@@ -55,13 +55,14 @@ CELL_TYPES = ["3D05", "6B07", "C3M10"]
 CHANNELS = ["RFP", "DAPI", "GFP"]
 CHANNEL_MAP = {"RFP": "3D05", "DAPI": "6B07", "GFP": "C3M10"}
 
-TOP_LEVEL_FOLDER = '3D05_6B07_test' # Change this to the folder you want to process but you have to include the top level strain folder
+TOP_LEVEL_FOLDER = '/Volumes/WD_Elements/3D05/24h' # Change this to the folder you want to process but you have to include the top level strain folder
 MIN_CELL_AREA = 20 # Change this to the minimum area of a cell
 MIN_CLUSTER_AREA = 100 # Change this to the minimum area of a cluster
 DENOISE_SIZE = 5 # Change this to the size of the denoising kernel
 DILATION_RADIUS = 20 # Change this to the radius you want to dilate the particle by. This helps find cells on the particle.
 DISTANCE_THRESHOLD = 2 # Change this to the distance threshold you want to use for the distance transform. This does same as above
 DAPI_RFP_OVERLAP_THRESHOLD = 0.1 # Change this to the threshold you want to use for the DAPI-RFP overlap.
+PX_TO_UM_CONV = 9.95 # Change this to the conversion factor for pixels --> microns 
 
 
 def process_h5_folder(cur_folder, h5_files):
@@ -86,7 +87,7 @@ def process_multiple_h5_files(cur_folder, h5_files):
     # To do this, we create a master cell area which is updated with each cell's area (background and particle are included but don't really matter and aren't used)
     for file in h5_files:
         full_file_path = os.path.join(cur_folder, file)
-        cell_types = get_cell_types(file)
+        cell_types = get_cell_types(file, channels=True)
         strain_type = cell_types[1]
         channel = None
         for channel, strain in CHANNEL_MAP.items():
@@ -365,19 +366,20 @@ def process_single_h5_file(cur_folder, file_path):
 # If a channel is found, returns a list with the single cell type that corresponds to that channel
 # If more than one channel is found, raises an error
 # Returns dictionary mapping cell value to cell type i.e. {1: "3D05", 2: "6B07", 3: "C3M10", 4: "particle", 5: "background"}
-def get_cell_types(file_path):
+def get_cell_types(file_path, channels=False):
     cell_types = []
     channels = []
     for cell_type in CELL_TYPES:
         if cell_type in file_path.upper():
             cell_types.append(cell_type)
-    for channel in CHANNELS:
-        if channel in file_path.upper():
-            channels.append(channel)
-    if len(channels) > 1:
-        raise ValueError("More than one channel found in file path")
-    if len(channels) == 1:
-        cell_types = [CHANNEL_MAP[channels[0]]]
+    if channels:
+        for channel in CHANNELS:
+            if channel in file_path.upper():
+                channels.append(channel)
+        if len(channels) > 1:
+            raise ValueError("More than one channel found in file path")
+        if len(channels) == 1:
+            cell_types = [CHANNEL_MAP[channels[0]]]
     cell_type_map = {}
     for i, cell_type in enumerate(cell_types):
         cell_type_map[i+1] = cell_type
@@ -619,6 +621,8 @@ def get_cell_counts_and_densities(cell_pos, cell_clusters, cell_area, particle_a
         if cell_type not in CELL_TYPES:
             continue
         cell_count[cell_type] = len(cell_pos[cell_type]) + len(cell_clusters[cell_type])
+        area = PX_TO_UM_CONV*PX_TO_UM_CONV*area # convert pixels^2 --> microns^2
+        particle_area = PX_TO_UM_CONV*PX_TO_UM_CONV*particle_area # convert pixels^2 --> microns^2
         cell_density[cell_type] = round(cell_count[cell_type] / particle_area, 5)
         cell_area_ratio[cell_type] = round(area / particle_area, 5)
     return cell_count, cell_density, cell_area_ratio
