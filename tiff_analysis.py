@@ -35,11 +35,7 @@ Is this already done by regions? Need to check if it is. Otherwise, ideally fill
 # One png for all three channels overlaid, with DAPI-RFP overlap already done.
 # CSV is just combined, raw commented out.
 # Create density with updated DAPI counts and area ratios
-
-
 '''
-
-# Load libraries
 import csv
 import os
 
@@ -53,24 +49,20 @@ from skimage.measure import label, regionprops
 from skimage.morphology import binary_dilation, disk
 
 # Define constants
-# cmap = colors.ListedColormap(['#c0a0c0', '#1f607f', 'black']) # Cells, Diatoms, Background
 CMAP = {"3D05": "magenta", "6B07": "cyan", "C3M10": "yellow", "Particle": "#1f607f", "Background": "black", "Overlap": "red"}
 BASE_TYPE_MAP = {1: "3D05", 2: "6B07", 3: "C3M10", 4: "Particle", 5: "Background", 6: "Overlap"}
 CELL_TYPES = ["3D05", "6B07", "C3M10"]
 CHANNELS = ["RFP", "DAPI", "GFP"]
 CHANNEL_MAP = {"RFP": "3D05", "DAPI": "6B07", "GFP": "C3M10"}
 
-TOP_LEVEL_FOLDER = '3D05_6B07_test/24h/Tp_3D05_6B07_C3M10_1_24h_60X_9' # Change this to the folder you want to process but you have to include the top level strain folder
-# TOP_LEVEL_FOLDER = '3D05_6B07_test/24h/Tp_3D05_C3M10_1_24h_60X_15' # Change this to the folder you want to process but you have to include the top level strain folder
+TOP_LEVEL_FOLDER = '3D05_6B07_test' # Change this to the folder you want to process but you have to include the top level strain folder
 MIN_CELL_AREA = 20 # Change this to the minimum area of a cell
 MIN_CLUSTER_AREA = 100 # Change this to the minimum area of a cluster
 DENOISE_SIZE = 5 # Change this to the size of the denoising kernel
-DILATION_RADIUS = 20
-DISTANCE_THRESHOLD = 2
-DAPI_RFP_OVERLAP_THRESHOLD = 0.1
-def find_datasets(name, obj):
-    if isinstance(obj, h5py.Dataset):
-        print(f"- {name}")
+DILATION_RADIUS = 20 # Change this to the radius you want to dilate the particle by. This helps find cells on the particle.
+DISTANCE_THRESHOLD = 2 # Change this to the distance threshold you want to use for the distance transform. This does same as above
+DAPI_RFP_OVERLAP_THRESHOLD = 0.1 # Change this to the threshold you want to use for the DAPI-RFP overlap.
+
 
 def process_h5_folder(cur_folder, h5_files):
     if len(h5_files) == 1:
@@ -80,7 +72,7 @@ def process_h5_folder(cur_folder, h5_files):
 
 def process_multiple_h5_files(cur_folder, h5_files):
     density_info_file_path, cell_pos_file_name = get_pos_and_density_file_names(cur_folder)
-    # cell_pos_raw_file_name = cell_pos_file_name.replace("_cell_pos.csv", "_cell_pos_raw.csv")
+    cell_pos_raw_file_name = cell_pos_file_name.replace("_cell_pos.csv", "_cell_pos_raw.csv")
     cell_pos_combined_file_name = cell_pos_file_name.replace("_cell_pos.csv", "_cell_pos_combined.csv")
     processed_folder = cur_folder.split("/")[-1]
     rfp_particle_area = None
@@ -114,7 +106,6 @@ def process_multiple_h5_files(cur_folder, h5_files):
         ds_arr_denoised = median_filter(ds_arr, size=DENOISE_SIZE)
 
         print("Getting cell positions and areas")
-        # If channel is DAPI, don't get cell positions and areas. Wait until after RFP is processed to get DAPI positions
         cell_positions, cell_clusters, cell_area, particle_area = get_cell_positions_and_areas(ds_arr_denoised, cell_types)
         channels_to_combine[channel] = ds_arr_denoised
         if channel == "RFP": # Check if the first cell type (key 1) is 3D05
@@ -127,21 +118,20 @@ def process_multiple_h5_files(cur_folder, h5_files):
             ds_arr_overlap = None
 
         create_channel_plots(ds_arr, cmap, norm, figure_name, base_name, ds_arr_denoised, ds_arr_overlap, cell_positions=cell_positions, cell_clusters=cell_clusters)
-        if channel != "DAPI": # Don't update master for DAPI. This is done after the DAPI-RFP overlap is combined.
-            master_cell_area.update(cell_area)
-            master_cell_pos.update(cell_positions)
-            master_cell_clusters.update(cell_clusters)
+        master_cell_area.update(cell_area)
+        master_cell_pos.update(cell_positions)
+        master_cell_clusters.update(cell_clusters)
 
     if rfp_particle_area is None:
         raise ValueError("RFP particle area not found")
     # Combine DAPI and RFP, then get new DAPI cell positions and clusters. Finally, update master cell positions, clusters, and areas.
     # Write raw cell position info to csv file
-    # write_cell_position_info(master_cell_pos, master_cell_clusters, cell_pos_raw_file_name) # Uncomment to write raw cell position info to csv file
+    write_cell_position_info(master_cell_pos, master_cell_clusters, cell_pos_raw_file_name) # Uncomment to write raw cell position info to csv file
     dapi_updated = combine_cell_positions_and_clusters(channels_to_combine)
     dapi_cell_positions, dapi_cell_clusters, dapi_cell_area, _ = get_cell_positions_and_areas(dapi_updated, dapi_cell_types)
-    master_cell_pos.update(dapi_cell_positions)
-    master_cell_clusters.update(dapi_cell_clusters)
-    master_cell_area.update(dapi_cell_area)
+    master_cell_pos["6B07"] = dapi_cell_positions["6B07"]
+    master_cell_clusters["6B07"] = dapi_cell_clusters["6B07"]
+    master_cell_area["6B07"] = dapi_cell_area["6B07"]
     dapi_cmap, dapi_norm = get_color_map(dapi_cell_types)
     cmap, norm = get_color_map(BASE_TYPE_MAP)
 
@@ -360,7 +350,6 @@ def process_single_h5_file(cur_folder, file_path):
     # Get cell positions and densities, note that these are dictionaries mapping cell type to an array of values, or single value for densities
     print("Getting cell positions and densities")
     cell_positions, cell_clusters, cell_area, particle_area = get_cell_positions_and_areas(ds_arr_denoised, cell_types)
-    print("Getting cell counts and densities")
     cell_count, cell_density, cell_area_ratio = get_cell_counts_and_densities(cell_positions, cell_clusters, cell_area, particle_area)
     ds_arr_recreated, particle_area = recreate_particle_area(ds_arr_denoised, cell_types, particle_area)
 
@@ -421,10 +410,10 @@ def normalize_ds_arr(ds_arr):
         raise ValueError(f"DS arr shape is not (2048,2048,1) or (1,2048,2048) or (2048,2048). Shape: {ds_arr.shape}")
 
 def create_plot(ds_arr, cmap, norm, file_name, cell_positions=None, cell_clusters=None, title=None):
-    plt.figure(figsize=(20, 20))
-    plt.imshow(ds_arr, cmap=cmap, norm=norm, interpolation='None')
+    fig, ax = plt.subplots(figsize=(20, 20))
+    ax.imshow(ds_arr, cmap=cmap, norm=norm, interpolation='None')
     if title is not None:
-        plt.title(title, fontsize=20, y=0.98)
+        ax.set_title(title, fontsize=20, pad=20)
 
     # Plots cell positions if cell_positions is not None and there are any cell positions
     if cell_positions is not None and any(cell_positions.values()):
@@ -448,13 +437,12 @@ def create_plot(ds_arr, cmap, norm, file_name, cell_positions=None, cell_cluster
     legend_elements.append(plt.Line2D([0], [0], marker='.', color='w', markerfacecolor='blue',
                                     label='Cell Clusters', markersize=10))
 
+
     # Add the legend below the subplots
-    plt.legend(handles=legend_elements, loc='center', bbox_to_anchor=(0.5, 0.02),
+    fig.legend(handles=legend_elements, loc='center', bbox_to_anchor=(0.5, 0.08),
               ncol=len(legend_elements), frameon=False)
-    # Adjust figure layout to make room for title and legend
-    plt.subplots_adjust(top=0.85, bottom=0.20)
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.savefig(file_name, bbox_inches='tight')
+
+    fig.savefig(file_name, bbox_inches='tight')
     plt.close()
 
 def create_single_plots(raw_arr, cmap, norm, base_name, output_name, denoised_arr, overlap_arr, cell_positions=None, cell_clusters=None):
@@ -505,8 +493,6 @@ def create_single_plots(raw_arr, cmap, norm, base_name, output_name, denoised_ar
     plt.savefig(f"{output_name}_plots.png")
     plt.close()
 
-
-
 def get_cell_positions_and_areas(z_slice, cell_types):
     label_im = label(z_slice) # converts ds_arr into a labeled image where each connected region gets a unique integer label
     regions = regionprops(label_im) # finds connected regions in label_im, where each detected region becomes a regionprops
@@ -539,8 +525,7 @@ def get_cell_positions_and_areas(z_slice, cell_types):
             cell_area[cell_type] += region.area
             cell_clusters[cell_type].append(region.centroid)
     return cell_pos, cell_clusters, cell_area, cell_area["Particle"]
-
-
+ 
 def recreate_particle_area(ds_arr, cell_types, particle_area):
     """
     Calculates "real" particle area by filling in the overlap area between particles and cells
@@ -591,7 +576,6 @@ def recreate_particle_area(ds_arr, cell_types, particle_area):
 #     return updated_ds_arr, overlap_area
 
 def fill_particle_area(ds_arr, particle_label, cell_label, overlap_label):
-
     # Create a boolean mask where True indicates the presence of particles
     particle_mask = ds_arr == particle_label
 
@@ -625,8 +609,6 @@ def fill_particle_area(ds_arr, particle_label, cell_label, overlap_label):
     updated_ds_arr[combined_overlap] = overlap_label
 
     return updated_ds_arr, np.sum(combined_overlap)
-
-
 
 def get_cell_counts_and_densities(cell_pos, cell_clusters, cell_area, particle_area):
     # Calculate cell counts, density, and area ratios
@@ -688,11 +670,6 @@ def write_density_info(csv_output_file, h5_folder, cell_density, cell_area_ratio
         for strain in cell_density:
             writer.writerow([h5_folder, strain, cell_density[strain], cell_area_ratio[strain], cell_count[strain]])
 
-
-
-
-
-
 # Retrieves a dictionary mapping each folder to a list of h5 files in that folder
 # This way, we can see if there are multiple h5 files in the same folder and use
 # That information to determine if it has been split into multiple channels
@@ -707,7 +684,6 @@ def get_h5_files_recursively(folder_path):
                     h5_files[h5_folder] = []
                 h5_files[h5_folder].append(file)
     return h5_files
-
 
 def main():
     print("Processing folder: ", TOP_LEVEL_FOLDER)
