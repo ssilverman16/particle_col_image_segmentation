@@ -52,8 +52,6 @@ select = [
     "UP",
     # ruff
     "RUF",
-    # tryceratops
-    "TRY",
 ]
 ignore = [
     # LineTooLong
