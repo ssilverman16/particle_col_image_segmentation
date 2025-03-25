@@ -2,39 +2,15 @@
 
 '''
 Created on Wed Mar 12 19:00:25 2025
+@author: marshallyale
 
-@author: vercelli
+To update:
+- provide ability to assign different size cutoffs to MIN_CELL_AREA and MIN_CLUSTER_AREA for the different strains when there are 
+multiple strain types present on the same particle
+- export cell area (of each individual cell) along with cell positions in the cell_pos.csv file
+- count cell clusters as multiple cells, where the # of cells is determined by (area of cluster)/(avg. area of 1 cell), where the avg. area of 
+1 cell is going to be different for each strain. These will preferably be parameters to set in the 'Define constants' section 
 
-Change from hardcoding cells to 1,2,3 to actual cell types
-If channels are split, there will be multiple h5 files in the same folder.
-Compute the particle area for ONLY the RFP (3D05) channel, do cell counts for each channel, sum and divide by particle area to get cell density.
-Output these to a csv file with a cell type column
-
-Will know if it's split based on how many strains are in the file name.
-If there's one strain in file name, that's the only cell type.
-If there's two-three strains in file name and only one h5 file, they are both in the same file. Then 1 = strain 1, 2 = strain 2, 3 = strain 3 | particle.
-    This order will always be in the order [3D05, 6B07, C3M10]
-If there's two-three strains in file name and more than one h5 file. Then 1 strain in each file. Have to do
-    combination of densities as mentioned above.
-    If split:
-        RFP -> 3D05 -> Magenta
-        DAPI -> 6B07 -> Cyan
-        GFP -> C3M10 -> Yellow
-
-    If split, also have to check DAPI and RFP after doing cell positions. If DAPI (6B07) + RFP (3D05) at approx the same position -> 3D05, only DAPI -> 6B07.
-    Do this by looking at regions of DAPI (6B07) and RFP (3D05) and seeing if there is overlap. If overlap above a certain threshold, then it's 3D05, otherwise it's 6B07.
-
-Think if there's a way to add cell area to particle area if the cell is on the particle.
-Is this already done by regions? Need to check if it is. Otherwise, ideally fill in the particle area.
-    It is not, need to find overlap between particles and cells and count that as particle area.
-
-# Comment out raw position csv and only write the combined one
-# Have three quadrant pngs with 1 being raw, 2 being denoised, 3 being filtered with cell positions and clusters, 4 being area of particle that's filled in.
-# For split channels, 3 and overlap only for the RFP.
-# One png for the DAPI-RFP overlap.
-# One png for all three channels overlaid, with DAPI-RFP overlap already done.
-# CSV is just combined, raw commented out.
-# Create density with updated DAPI counts and area ratios
 '''
 import csv
 import os
@@ -49,16 +25,16 @@ from skimage.measure import label, regionprops
 from skimage.morphology import binary_dilation, disk
 
 # Define constants
-CMAP = {"3D05": "magenta", "6B07": "cyan", "C3M10": "yellow", "Particle": "#1f607f", "Background": "black", "Overlap": "red"}
+CMAP = {"3D05": "#c0a0c0", "6B07": "cyan", "C3M10": "yellow", "Particle": "#1f607f", "Background": "black", "Overlap": "#1f607f"}
 BASE_TYPE_MAP = {1: "3D05", 2: "6B07", 3: "C3M10", 4: "Particle", 5: "Background", 6: "Overlap"}
 CELL_TYPES = ["3D05", "6B07", "C3M10"]
 CHANNELS = ["RFP", "DAPI", "GFP"]
 CHANNEL_MAP = {"RFP": "3D05", "DAPI": "6B07", "GFP": "C3M10"}
 
-TOP_LEVEL_FOLDER = '/Volumes/WD_Elements/3D05/24h' # Change this to the folder you want to process but you have to include the top level strain folder
-MIN_CELL_AREA = 20 # Change this to the minimum area of a cell
-MIN_CLUSTER_AREA = 100 # Change this to the minimum area of a cluster
-DENOISE_SIZE = 5 # Change this to the size of the denoising kernel
+TOP_LEVEL_FOLDER = '/Volumes/WD_Elements/3D05/120h' # Change this to the folder you want to process but you have to include the top level strain folder
+MIN_CELL_AREA = 20 # Change this to the minimum area of a cell (in sq. pixels)
+MIN_CLUSTER_AREA = 200 # Change this to the minimum area of a cluster (in sq. pixels)
+DENOISE_SIZE = 5 # Change this to the size of the denoising kernel (in pixels)
 DILATION_RADIUS = 20 # Change this to the radius you want to dilate the particle by. This helps find cells on the particle.
 DISTANCE_THRESHOLD = 2 # Change this to the distance threshold you want to use for the distance transform. This does same as above
 DAPI_RFP_OVERLAP_THRESHOLD = 0.1 # Change this to the threshold you want to use for the DAPI-RFP overlap.
@@ -274,29 +250,29 @@ def create_channel_plots(raw_arr, cmap, norm, base_name, output_name, denoised_a
     plt.subplots_adjust(top=0.9)
 
     axes[0, 0].imshow(raw_arr, cmap=cmap, norm=norm)
-    axes[0, 0].set_title('Raw')
+    axes[0, 0].set_title('Raw segmentation')
 
     axes[0, 1].imshow(denoised_arr, cmap=cmap, norm=norm)
-    axes[0, 1].set_title('De-Noised')
+    axes[0, 1].set_title(f'Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA/(PX_TO_UM_CONV*PX_TO_UM_CONV):.2f} $\mu$m$^2$')
 
 
     axes[1, 0].imshow(denoised_arr, cmap=cmap, norm=norm)
-    axes[1, 0].set_title('Cell Positions')
+    axes[1, 0].set_title(f'Cell Positions (where aggregates >{MIN_CLUSTER_AREA/(PX_TO_UM_CONV*PX_TO_UM_CONV):.2f} $\mu$m$^2$')
 
 
     # Plots cell positions if cell_positions is not None and there are any cell positions
     if cell_positions is not None and any(cell_positions.values()):
         all_positions = np.concatenate([np.array(positions) for positions in cell_positions.values()])
-        axes[1, 0].scatter(all_positions[:, 1], all_positions[:, 0], s=1, c='red', marker='.')
+        axes[1, 0].scatter(all_positions[:, 1], all_positions[:, 0], s=3, c='white', marker='.')
 
     # Plots cell clusters if cell_clusters is not None and there are any cell clusters
     if cell_clusters is not None and any(cell_clusters.values()):
         all_clusters = np.concatenate([np.array(clusters) for clusters in cell_clusters.values()])
-        axes[1, 0].scatter(all_clusters[:, 1], all_clusters[:, 0], s=3, c='blue', marker='.')
+        axes[1, 0].scatter(all_clusters[:, 1], all_clusters[:, 0], s=10, c='red', marker='.')
 
     if overlap_arr is not None:
         axes[1, 1].imshow(overlap_arr, cmap=cmap, norm=norm)
-        axes[1, 1].set_title('Particle Overlap')
+        axes[1, 1].set_title('Particle Area')
 
     # Create legend patches for each color in the colormap
     legend_elements = []
@@ -308,10 +284,10 @@ def create_channel_plots(raw_arr, cmap, norm, base_name, output_name, denoised_a
         legend_elements.append(plt.Rectangle((0,0), 1, 1, facecolor=color, label=cell_type))
 
     # Add red dot for cell positions and blue dot for clusters
-    legend_elements.append(plt.Line2D([0], [0], marker='.', color='w', markerfacecolor='red',
-                                    label='Cell Positions', markersize=10))
-    legend_elements.append(plt.Line2D([0], [0], marker='.', color='w', markerfacecolor='blue',
-                                    label='Cell Clusters', markersize=10))
+    legend_elements.append(plt.Line2D([0], [0], marker='.', color='w', markerfacecolor='white', markeredgecolor='black',
+                                    label='single cells', markersize=10))
+    legend_elements.append(plt.Line2D([0], [0], marker='.', color='w', markerfacecolor='red', markeredgecolor='black',
+                                    label='aggregates', markersize=10))
 
     # Add the legend below the subplots
     fig.legend(handles=legend_elements, loc='center', bbox_to_anchor=(0.5, 0.02),
@@ -420,12 +396,12 @@ def create_plot(ds_arr, cmap, norm, file_name, cell_positions=None, cell_cluster
     # Plots cell positions if cell_positions is not None and there are any cell positions
     if cell_positions is not None and any(cell_positions.values()):
         all_positions = np.concatenate([np.array(positions) for positions in cell_positions.values() if len(positions) > 0])
-        plt.scatter(all_positions[:, 1], all_positions[:, 0], s=1, c='red', marker='.')
+        plt.scatter(all_positions[:, 1], all_positions[:, 0], s=3, c='white', marker='.')
 
     # Plots cell clusters if cell_clusters is not None and there are any cell clusters
     if cell_clusters is not None and any(cell_clusters.values()):
         all_clusters = np.concatenate([np.array(clusters) for clusters in cell_clusters.values() if len(clusters) > 0])
-        plt.scatter(all_clusters[:, 1], all_clusters[:, 0], s=3, c='blue', marker='.')
+        plt.scatter(all_clusters[:, 1], all_clusters[:, 0], s=10, c='red', marker='.')
 
     legend_elements = []
     for cell_type, color in CMAP.items():
@@ -434,10 +410,10 @@ def create_plot(ds_arr, cmap, norm, file_name, cell_positions=None, cell_cluster
         legend_elements.append(plt.Rectangle((0,0), 1, 1, facecolor=color, label=cell_type))
 
     # Add red dot for cell positions and blue dot for clusters
-    legend_elements.append(plt.Line2D([0], [0], marker='.', color='w', markerfacecolor='red',
-                                    label='Cell Positions', markersize=10))
-    legend_elements.append(plt.Line2D([0], [0], marker='.', color='w', markerfacecolor='blue',
-                                    label='Cell Clusters', markersize=10))
+    legend_elements.append(plt.Line2D([0], [0], marker='.', color='w', markerfacecolor='white', markeredgecolor='black',
+                                    label='single cells', markersize=10))
+    legend_elements.append(plt.Line2D([0], [0], marker='.', color='w', markerfacecolor='red', markeredgecolor='black',
+                                    label='aggregates', markersize=10))
 
 
     # Add the legend below the subplots
@@ -453,26 +429,26 @@ def create_single_plots(raw_arr, cmap, norm, base_name, output_name, denoised_ar
     plt.subplots_adjust(top=0.9)
 
     axes[0, 0].imshow(raw_arr, cmap=cmap, norm=norm)
-    axes[0, 0].set_title('Raw')
+    axes[0, 0].set_title('Raw segmentation')
 
     axes[0, 1].imshow(denoised_arr, cmap=cmap, norm=norm)
-    axes[0, 1].set_title('De-Noised')
+    axes[0, 1].set_title(f'Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA/(PX_TO_UM_CONV*PX_TO_UM_CONV):.2f} $\mu$m$^2$')
 
 
     axes[1, 0].imshow(denoised_arr, cmap=cmap, norm=norm)
-    axes[1, 0].set_title('Cell Positions')
+    axes[1, 0].set_title(f'Cell Positions (where aggregates >{MIN_CLUSTER_AREA/(PX_TO_UM_CONV*PX_TO_UM_CONV):.2f} $\mu$m$^2$')
     # Plots cell positions if cell_positions is not None and there are any cell positions
     if cell_positions is not None and any(cell_positions.values()):
         all_positions = np.concatenate([np.array(positions) for positions in cell_positions.values()])
-        axes[1, 0].scatter(all_positions[:, 1], all_positions[:, 0], s=1, c='red', marker='.')
+        axes[1, 0].scatter(all_positions[:, 1], all_positions[:, 0], s=3, c='white', marker='.')
 
     # Plots cell clusters if cell_clusters is not None and there are any cell clusters
     if cell_clusters is not None and any(cell_clusters.values()):
         all_clusters = np.concatenate([np.array(clusters) for clusters in cell_clusters.values()])
-        axes[1, 0].scatter(all_clusters[:, 1], all_clusters[:, 0], s=3, c='blue', marker='.')
+        axes[1, 0].scatter(all_clusters[:, 1], all_clusters[:, 0], s=10, c='red', marker='.')
 
     axes[1, 1].imshow(overlap_arr, cmap=cmap, norm=norm)
-    axes[1, 1].set_title('Particle Overlap')
+    axes[1, 1].set_title('Particle Area')
     # Create legend patches for each color in the colormap
     legend_elements = []
     for cell_type, color in CMAP.items():
@@ -481,10 +457,10 @@ def create_single_plots(raw_arr, cmap, norm, base_name, output_name, denoised_ar
         legend_elements.append(plt.Rectangle((0,0), 1, 1, facecolor=color, label=cell_type))
 
     # Add red dot for cell positions and blue dot for clusters
-    legend_elements.append(plt.Line2D([0], [0], marker='.', color='w', markerfacecolor='red',
-                                    label='Cell Positions', markersize=10))
-    legend_elements.append(plt.Line2D([0], [0], marker='.', color='w', markerfacecolor='blue',
-                                    label='Cell Clusters', markersize=10))
+    legend_elements.append(plt.Line2D([0], [0], marker='.', color='w', markerfacecolor='white', markeredgecolor='black',
+                                    label='single cells', markersize=10))
+    legend_elements.append(plt.Line2D([0], [0], marker='.', color='w', markerfacecolor='red', markeredgecolor='black',
+                                    label='aggregates', markersize=10))
 
     # Add the legend below the subplots
     fig.legend(handles=legend_elements, loc='center', bbox_to_anchor=(0.5, 0.02),
@@ -621,8 +597,8 @@ def get_cell_counts_and_densities(cell_pos, cell_clusters, cell_area, particle_a
         if cell_type not in CELL_TYPES:
             continue
         cell_count[cell_type] = len(cell_pos[cell_type]) + len(cell_clusters[cell_type])
-        area = PX_TO_UM_CONV*PX_TO_UM_CONV*area # convert pixels^2 --> microns^2
-        particle_area = PX_TO_UM_CONV*PX_TO_UM_CONV*particle_area # convert pixels^2 --> microns^2
+        area = area/(PX_TO_UM_CONV*PX_TO_UM_CONV) # convert pixels^2 --> microns^2
+        particle_area = particle_area/(PX_TO_UM_CONV*PX_TO_UM_CONV) # convert pixels^2 --> microns^2
         cell_density[cell_type] = round(cell_count[cell_type] / particle_area, 5)
         cell_area_ratio[cell_type] = round(area / particle_area, 5)
     return cell_count, cell_density, cell_area_ratio
@@ -635,7 +611,7 @@ def get_type(region, data):
 def write_cell_position_info(cell_positions, cell_clusters, csv_output_file):
     with open(csv_output_file, 'w') as f:
         writer = csv.writer(f)
-        writer.writerow(["x_pos", "y_pos", "strain_type", "cell_type"])
+        writer.writerow(["x_pos", "y_pos", "strain", "cell_type"])
         for strain_type, pos in cell_positions.items():
             for p in pos:
                 writer.writerow([round(p[1], 2), round(p[0], 2), strain_type, "cell"])
