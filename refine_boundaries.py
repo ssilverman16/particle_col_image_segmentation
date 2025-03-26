@@ -1,3 +1,18 @@
+"""
+Goals: 
+1. Use watershed segmentation to refine segmentations of cell boundaries. 
+2. Integrate this into the tiff_analysis.py file and re-calculate the areas and cell positions of individual cells. 
+   Hopefully this will resolve many of the cells in the clusters, but probably many will still not be perfectly segmented,
+   so for residual clusters that don't get segmented, let's still label them and compute the # of cells they represent 
+   (i.e. the code you already wrote).
+3. Compute all cell-cell distances: (a) as the distance between each cell of a given strain and its nearest neighbor of the 
+   same strain, and as (b) as the distance between each cell of a given strain and its nearest neighbor of a different strain.
+   For example, if 3D05 and C3M10 are present, the distances between every pair of 3D05-3D05 cells, and between every pair of
+   3D05-C3M10 cells.  [this is my ultimate analytical goal with my images- I think one of my lab mates might already have similar
+   code for this, I will check with him and push the code up if he gives it to me.]
+
+"""
+
 import csv
 import os
 
@@ -33,6 +48,12 @@ plt.figure(figsize=(6,6))
 plt.imshow(binary_mask, cmap="gray")
 plt.title("Binary Foreground Mask")
 plt.show()
+
+
+
+# CODE WORKS UNTIL THIS POINT...I didn't get very far, lol
+
+
 
 # Compute markers for watershed segmentation
 ## Compute the Euclidean distance transform
