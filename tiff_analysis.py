@@ -7,6 +7,8 @@ Created on Wed Mar 12 19:00:25 2025
 To update:
 - count cell clusters as multiple cells, where the # of cells is determined by (area of cluster)/(avg. area of 1 cell), where the avg. area of
 1 cell is going to be different for each strain. These will preferably be parameters to set in the 'Define constants' section
+Use a floor function to round number of cells down to the nearest whole number
+Add column in csv for number of cells that cluster/cell represents
 
 """
 
@@ -37,7 +39,8 @@ CHANNELS = ["RFP", "DAPI", "GFP"]
 CHANNEL_MAP = {"RFP": "3D05", "DAPI": "6B07", "GFP": "C3M10"}
 
 # TOP_LEVEL_FOLDER = "/Volumes/WD_Elements/3D05/120h"  # Change this to the folder you want to process but you have to include the top level strain folder
-TOP_LEVEL_FOLDER = "3D05_6B07/24h/Tp_3D05_C3M10_1_24h_60X_15"
+# TOP_LEVEL_FOLDER = "3D05_6B07/24h/Tp_3D05_C3M10_1_24h_60X_15"
+TOP_LEVEL_FOLDER = "3D05_6B07/24h/Tp_3D05_6B07_C3M10_1_24h_60X_9"
 MIN_CELL_AREA = {"3D05": 20, "6B07": 20, "C3M10": 20}  # Change this to the minimum area of a cell (in sq. pixels)
 MIN_CLUSTER_AREA = {
     "3D05": 200,
@@ -78,7 +81,6 @@ def process_multiple_h5_files(cur_folder, h5_files):
     for file in h5_files:
         full_file_path = os.path.join(cur_folder, file)
         cell_types = get_cell_types(file, use_channels=True)
-        print("Cell types: ", cell_types)
         strain_type = cell_types[1]
         channel = None
         for channel, strain in CHANNEL_MAP.items():
@@ -666,6 +668,15 @@ def get_cell_positions_and_areas(z_slice, cell_types):
             cell_pos[cell_type].append(region)  # if true, stores the region
         if region.area >= min_cluster_area:
             cell_clusters[cell_type].append(region)
+
+    # Get average area of cells
+    cell_area_averages = {}
+    for cell_type, cell_array in cell_pos.items():
+        cell_area_averages[cell_type] = np.average([cell.area for cell in cell_array])
+    for cell_Type, cluster_array in cell_clusters.items():
+        for cluster in cluster_array:
+            cluster.cells = int(cluster.area // cell_area_averages[cell_Type])
+
     return cell_pos, cell_clusters, particle_area
 
 
@@ -764,7 +775,10 @@ def get_cell_counts_and_densities(cell_pos, cell_clusters, particle_area):
     for cell_type, cell_array in cell_pos.items():
         if cell_type not in CELL_TYPES:
             continue
-        cell_count[cell_type] = len(cell_array) + len(cell_clusters[cell_type])
+        cluster_cells = 0
+        for cluster in cell_clusters[cell_type]:
+            cluster_cells += cluster.cells
+        cell_count[cell_type] = len(cell_array) + cluster_cells
         cell_area = np.sum([cell.area for cell in cell_array])
         for cluster in cell_clusters[cell_type]:
             cell_area += cluster["area"]
@@ -785,17 +799,17 @@ def get_type(region, data):
 def write_cell_position_info(cell_positions, cell_clusters, csv_output_file):
     with open(csv_output_file, "w") as f:
         writer = csv.writer(f)
-        writer.writerow(["strain", "cell_type", "x_pos", "y_pos", "cell_area"])
+        writer.writerow(["strain", "cell_type", "x_pos", "y_pos", "cell_area", "cell_count"])
         for strain_type, pos in cell_positions.items():
             for p in pos:
                 cell_pos = p.centroid
                 area = p.area / (PX_TO_UM_CONV**2)  # convert pixels^2 --> microns^2
-                writer.writerow([strain_type, "cell", round(cell_pos[1], 2), round(cell_pos[0], 2), area])
+                writer.writerow([strain_type, "cell", round(cell_pos[1], 2), round(cell_pos[0], 2), area, 1])
         for strain_type, cluster in cell_clusters.items():
             for c in cluster:
                 pos = c.centroid
-                area = p.area / (PX_TO_UM_CONV**2)  # convert pixels^2 --> microns^2
-                writer.writerow([strain_type, "cluster", round(pos[1], 2), round(pos[0], 2), area])
+                area = c.area / (PX_TO_UM_CONV**2)  # convert pixels^2 --> microns^2
+                writer.writerow([strain_type, "cluster", round(pos[1], 2), round(pos[0], 2), area, c.cells])
 
 
 def write_density_info(csv_output_file, h5_folder, cell_density, cell_area_ratio, cell_count):
