@@ -40,7 +40,7 @@ CHANNEL_MAP = {"RFP": "3D05", "DAPI": "6B07", "GFP": "C3M10"}
 
 # TOP_LEVEL_FOLDER = "/Volumes/WD_Elements/3D05/120h"  # Change this to the folder you want to process but you have to include the top level strain folder
 # TOP_LEVEL_FOLDER = "3D05_6B07/24h/Tp_3D05_C3M10_1_24h_60X_15"
-TOP_LEVEL_FOLDER = "3D05_6B07/24h/Tp_3D05_6B07_C3M10_1_24h_60X_9"
+TOP_LEVEL_FOLDER = "3D05_6B07/24h/Tp_3D05_C3M10_1_24h_60X_15"
 MIN_CELL_AREA = {"3D05": 20, "6B07": 20, "C3M10": 20}  # Change this to the minimum area of a cell (in sq. pixels)
 MIN_CLUSTER_AREA = {
     "3D05": 200,
@@ -772,6 +772,7 @@ def get_cell_counts_and_densities(cell_pos, cell_clusters, particle_area):
     cell_count = {}
     cell_density = {}
     cell_area_ratio = {}
+    particle_area = particle_area / (PX_TO_UM_CONV**2)  # convert pixels^2 --> microns^2
     for cell_type, cell_array in cell_pos.items():
         if cell_type not in CELL_TYPES:
             continue
@@ -784,7 +785,6 @@ def get_cell_counts_and_densities(cell_pos, cell_clusters, particle_area):
             cell_area += cluster["area"]
 
         area = cell_area / (PX_TO_UM_CONV**2)  # convert pixels^2 --> microns^2
-        particle_area = particle_area / (PX_TO_UM_CONV**2)  # convert pixels^2 --> microns^2
         cell_density[cell_type] = round(cell_count[cell_type] / particle_area, 5)
         cell_area_ratio[cell_type] = round(area / particle_area, 5)
     return cell_count, cell_density, cell_area_ratio
