@@ -88,7 +88,7 @@ def process_folder(top_level_folder):
         process_tif(file)
 
 def main():
-    folder_name = '3D05_6B07'
+    folder_name = '/Volumes/WD_Elements/6B07_C3M10'
     print("Processing folder: ", folder_name)
     process_folder(folder_name)
     print("Processing complete")
