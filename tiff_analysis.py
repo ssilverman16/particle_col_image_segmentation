@@ -4,11 +4,10 @@
 Created on Wed Mar 12 19:00:25 2025
 @author: marshallyale
 
-To update:
-- count cell clusters as multiple cells, where the # of cells is determined by (area of cluster)/(avg. area of 1 cell), where the avg. area of
-1 cell is going to be different for each strain. These will preferably be parameters to set in the 'Define constants' section
-Use a floor function to round number of cells down to the nearest whole number
-Add column in csv for number of cells that cluster/cell represents
+To update: how script parses different .h5 files and determines which strain is which.
+- 6B07 condition: .h5 files split into DAPI channel (= 6B07) & RFP channel (= particle & background).
+- 3D05 + 6B07 condition: .h5 files split into DAPI channel (= 6B07 & 3D05) & RFP channel (= 3D05, particle, & background).
+- 6B07 + C3M10 condition: .h5 files split into DAPI channel (= 6B07, 3D05, & C3M10), GFP channel (= C3M10), & RFP channel (= 3D05, particle, & background).
 
 """
 
