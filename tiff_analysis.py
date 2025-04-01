@@ -4,11 +4,20 @@
 Created on Wed Mar 12 19:00:25 2025
 @author: marshallyale
 
+# Of layers is variable depending on the strain condition anything with 6B07 and that's split into channels
 To update: how script parses different .h5 files and determines which strain is which.
-- 6B07 condition: .h5 files split into DAPI channel (= 6B07) & RFP channel (= particle & background).
+- 6B07 condition: .h5 files split into DAPI channel (6B07) & RFP channel (particle & background).
+    6B07: If multiple h5 files but only 6B07 strain, the RFP channel will be 1 = particle, 2=background, NO CELL! However, would also not need to look at overlap conditions.
 - 3D05 + 6B07 condition: .h5 files split into DAPI channel (= 6B07 & 3D05) & RFP channel (= 3D05, particle, & background).
-- 6B07 + C3M10 condition: .h5 files split into DAPI channel (= 6B07, 3D05, & C3M10), GFP channel (= C3M10), & RFP channel (= 3D05, particle, & background).
+- 6B07 + C3M10 condition: .h5 files split into DAPI channel (= 6B07 & C3M10), GFP channel (= C3M10), & RFP channel (= particle, & background).
+    RFP channel has NO cell_type. Also have to do the same thing as when RFP goes through the channel. Have to look at overlap between GFP and DAPI and then
+    if overlap, take DAPi.
 
+    These are only for the case where there are multiple H5 files, but there are only a couple of channels in it.
+
+Cells and channels:
+Extract strain types from folder name (Happens at top level)
+Extract channel from file name (Happens for each file)
 """
 
 import csv
@@ -30,30 +39,22 @@ CMAP = {
     "C3M10": "yellow",
     "Particle": "#1f607f",
     "Background": "black",
-    "Overlap": "#1f607f",
+    # "Overlap": "#1f607f",
 }
-BASE_TYPE_MAP = {1: "3D05", 2: "6B07", 3: "C3M10", 4: "Particle", 5: "Background", 6: "Overlap"}
+BASE_TYPE_MAP = {1: "3D05", 2: "6B07", 3: "C3M10", 4: "Particle", 5: "Background"}
 CELL_TYPES = ["3D05", "6B07", "C3M10"]
 CHANNELS = ["RFP", "DAPI", "GFP"]
 CHANNEL_MAP = {"RFP": "3D05", "DAPI": "6B07", "GFP": "C3M10"}
+STRAIN_MAP = {"3D05": "RFP", "6B07": "DAPI", "C3M10": "GFP"}
 
 TOP_LEVEL_FOLDER = "/Volumes/WD_Elements/3D05_C3M10/120h"  # Change this to the folder you want to process but you have to include the top level strain folder
-# TOP_LEVEL_FOLDER = "3D05_6B07/24h/Tp_3D05_C3M10_1_24h_60X_15"
 MIN_CELL_AREA = {"3D05": 20, "6B07": 20, "C3M10": 20}  # Change this to the minimum area of a cell (in sq. pixels)
-MIN_CELL_AREA_list = list(MIN_CELL_AREA.values())  # Convert MIN_CELL_AREA values to a list
-MIN_CELL_AREA_3D05 = MIN_CELL_AREA_list[0]   
-MIN_CELL_AREA_6B07 = MIN_CELL_AREA_list[1]  
-MIN_CELL_AREA_C3M10 = MIN_CELL_AREA_list[2]
 
 MIN_CLUSTER_AREA = {
     "3D05": 200,
     "6B07": 200,
     "C3M10": 370,
 }  # Change this to the minimum area of a cluster (in sq. pixels)
-MIN_CLUSTER_AREA_list = list(MIN_CLUSTER_AREA.values())  # Convert MIN_CELL_AREA values to a list
-MIN_CLUSTER_AREA_3D05 = MIN_CLUSTER_AREA_list[0]   
-MIN_CLUSTER_AREA_6B07 = MIN_CLUSTER_AREA_list[1]  
-MIN_CLUSTER_AREA_C3M10 = MIN_CLUSTER_AREA_list[2]
 
 DENOISE_SIZE = 5  # Change this to the size of the denoising kernel (in pixels)
 DILATION_RADIUS = (
@@ -81,20 +82,18 @@ def process_multiple_h5_files(cur_folder, h5_files):
     rfp_particle_area = None
     master_cell_pos = {}
     master_cell_clusters = {}
-    channels_to_combine = {"3D05": None, "6B07": None}
+    channel_ds_arrs = {}
     dapi_cell_types = None
+    cell_strains = get_strains_from_file(cur_folder)
+    print("Cell strains found in file", cell_strains)
     # Process the file very similar to single file case but don't calculate densities right away
     # Wait until all files are processed to calculate densities based on the particle density for RFP (3D05)
     # To do this, we create a master cell area which is updated with each cell's area (background and particle are included but don't really matter and aren't used)
     for file in h5_files:
         full_file_path = os.path.join(cur_folder, file)
-        cell_types = get_cell_types(file, use_channels=True)
-        strain_type = cell_types[1]
-        channel = None
-        for channel, strain in CHANNEL_MAP.items():
-            if strain == strain_type:
-                channel = channel
-                break
+        channel = get_channel_from_file(file)
+        cell_types = get_cell_type_map_from_channel(cell_strains, channel)
+        strain_type = cell_types[1] # This can be a particle instead of strain but it should continue before needing the variable.
         figure_name = f"{processed_folder}_{channel}"
         print("Processing channel:", channel)
         if len(cell_types) == 0:
@@ -110,16 +109,19 @@ def process_multiple_h5_files(cur_folder, h5_files):
         print("Getting cell positions and areas")
         cell_positions, cell_clusters, particle_area = get_cell_positions_and_areas(ds_arr_denoised, cell_types)
         print("Finished getting cell positions")
-        channels_to_combine[channel] = ds_arr_denoised
+        channel_ds_arrs[channel] = ds_arr_denoised
         if channel == "RFP":  # Check if the first cell type (key 1) is 3D05
             rfp_particle_area = particle_area
             ds_arr_overlap, rfp_particle_area = recreate_particle_area(ds_arr_denoised, cell_types, particle_area)
+            if strain_type == "Particle": # Only the case if no cell on it
+                continue
         elif channel == "DAPI":
             dapi_cell_types = cell_types  # Needed for update later
             ds_arr_overlap = None
         else:
             ds_arr_overlap = None
-
+        if strain_type not in CELL_TYPES:
+            raise ValueError(f"Strain type not in cell types. {strain_type}")
         create_channel_plots(
             ds_arr,
             strain_type,
@@ -142,31 +144,39 @@ def process_multiple_h5_files(cur_folder, h5_files):
     write_cell_position_info(
         master_cell_pos, master_cell_clusters, cell_pos_raw_file_name
     )  # Uncomment to write raw cell position info to csv file
-    dapi_updated = combine_cell_positions_and_clusters(channels_to_combine)
-    dapi_cell_positions, dapi_cell_clusters, _ = get_cell_positions_and_areas(dapi_updated, dapi_cell_types)
-    master_cell_pos["6B07"] = dapi_cell_positions["6B07"]
-    master_cell_clusters["6B07"] = dapi_cell_clusters["6B07"]
-    dapi_cmap, dapi_norm = get_color_map(dapi_cell_types)
     cmap, norm = get_color_map(BASE_TYPE_MAP)
+    if len(cell_strains) > 1:
+        other_channel = channel_ds_arrs["GFP"] if cell_strains == ["6B07", "C3M10"] else channel_ds_arrs["RFP"]
+        other_channel_name = "GFP" if cell_strains == ["6B07", "C3M10"] else "RFP"
 
-    print("Visualizing DAPI-RFP overlap")
-    # RFP will be the base channel, so we need to update the RFP image to have the required cell type numbers to the CELL_TYPES numbers
-    # (so RFP will still be 1 but the particle will be 4, background will be 5, etc. So those need to have 2 added to them)
-    rfp_updated = channels_to_combine["RFP"].copy()
-    rfp_updated[rfp_updated == 2] = 4  # Particle
-    rfp_updated[rfp_updated == 3] = 5  # Background
-    final_rfp = rfp_updated.copy()
-    visualize_dapi_overlap_results(
-        channels_to_combine["DAPI"],
-        rfp_updated,
-        dapi_updated,
-        cmap,
-        norm,
-        dapi_cmap,
-        dapi_norm,
-        processed_folder,
-        base_name,
-    )
+        dapi_updated = combine_cell_positions_and_clusters(channel_ds_arrs["DAPI"], other_channel)
+        dapi_cell_positions, dapi_cell_clusters, _ = get_cell_positions_and_areas(dapi_updated, dapi_cell_types)
+        master_cell_pos["6B07"] = dapi_cell_positions["6B07"]
+        master_cell_clusters["6B07"] = dapi_cell_clusters["6B07"]
+        dapi_cmap, dapi_norm = get_color_map(dapi_cell_types)
+
+        print(f"Visualizing DAPI-{other_channel_name} overlap")
+        # The other channel (RFP/GFP) will be the base channel, so we need to update the other image to have the required cell type numbers to the CELL_TYPES numbers
+        # 
+        
+        other_updated = other_channel.copy()
+        other_updated[other_updated == 3] = 5  # Background
+        other_updated[other_updated == 2] = 4  # Particle
+        if other_channel_name == "GFP":
+            other_updated[other_updated == 1] = 3
+        
+        visualize_dapi_overlap_results(
+            channel_ds_arrs["DAPI"],
+            other_updated,
+            dapi_updated,
+            cmap,
+            norm,
+            dapi_cmap,
+            dapi_norm,
+            processed_folder,
+            base_name,
+            other_channel_name
+        )
 
     # Get cell counts, densities, and area ratios
     cell_counts, cell_densities, cell_area_ratios = get_cell_counts_and_densities(
@@ -174,7 +184,9 @@ def process_multiple_h5_files(cur_folder, h5_files):
     )
     # Write density info to csv file
     write_density_info(density_info_file_path, processed_folder, cell_densities, cell_area_ratios, cell_counts)
-    combined_channels = combine_channels(final_rfp, channels_to_combine["DAPI"], channels_to_combine["GFP"])
+    rfp_base_arr = channel_ds_arrs["RFP"].copy()
+    get_rfp_base_arr(rfp_base_arr, cell_strains)
+    combined_channels = combine_channels(rfp_base_arr, channel_ds_arrs, cell_strains)
     output_name = f"{base_name}_combined_channels.png"
     create_plot(
         combined_channels,
@@ -188,19 +200,40 @@ def process_multiple_h5_files(cur_folder, h5_files):
     # Write combined cell position csv file and write to CSV file
     write_cell_position_info(master_cell_pos, master_cell_clusters, cell_pos_combined_file_name)
 
+def get_rfp_base_arr(rfp_arr, cell_strains):
+    if cell_strains == ["6B07"] or cell_strains == ["6B07", "C3M10"]:
+        rfp_arr[rfp_arr == 1] = 4  # Particle
+        rfp_arr[rfp_arr == 2] = 5  # Background
+    else:
+        rfp_arr[rfp_arr == 2] = 4  # Particle
+        rfp_arr[rfp_arr == 3] = 5  # Background
+    return rfp_arr
 
-def combine_channels(rfp_updated, dapi, gfp):
-    rfp_updated[dapi == 1] = 2
-    rfp_updated[gfp == 1] = 3
-    return rfp_updated
+def combine_channels(rfp_base, channel_ds_arrs, cell_strains):
+    for strain in cell_strains:
+        if strain == "3D05":
+            continue
+        channel_name = STRAIN_MAP[strain]
+        for val, strain_name in BASE_TYPE_MAP.items():
+            if strain_name == strain:
+                rfp_base[channel_ds_arrs[channel_name] == 1] = val
+        # rfp_base[channel_ds_arrs["DAPI"] == 1] = 2
+        # if rfp_base_name == "RFP":
+        #     rfp_base[channel_ds_arrs["GFP"] == 1] = 3
+        # elif rfp_base_name == "GFP":
+        #     rfp_base[channel_ds_arrs["RFP"] == 1] = 3
+        # else:
+        #     raise ValueError(f"Other channel name is something besides RFP, GFP. Name: {other_channel_name}")
+
+    return rfp_base
 
 
-def combine_cell_positions_and_clusters(channels_to_combine):
+def combine_cell_positions_and_clusters(dapi_channel, other_channel):
     print("Checking DAPI and RFP overlap")
-    # Since these are single channels, 1 = cell and 2 = particle
-    cell_to_be_removed = 4
-    dapi_mask = channels_to_combine["DAPI"] == 1
-    rfp_mask = channels_to_combine["RFP"] == 1
+    # Since these are single channels, 1 = cell and 2 = particle (set to be equal to particle)
+    cell_to_be_removed = 2
+    dapi_mask = dapi_channel == 1
+    rfp_mask = other_channel == 1
 
     # Label connected components in image1
     labeled_dapi = label(dapi_mask)
@@ -225,7 +258,7 @@ def combine_cell_positions_and_clusters(channels_to_combine):
             cells_to_remove = np.logical_or(cells_to_remove, cell_mask)
 
     # Create the merged image
-    dapi_combined = channels_to_combine["DAPI"].copy()
+    dapi_combined = dapi_channel.copy()
 
     # Remove the cells that are significantly overlapped
     # Set them to the same value as in image2
@@ -234,7 +267,7 @@ def combine_cell_positions_and_clusters(channels_to_combine):
 
 
 def visualize_dapi_overlap_results(
-    original_dapi, original_rfp, updated_dapi, cmap, norm, dapi_cmap, dapi_norm, base_name, output_name
+    original_dapi, original_rfp, updated_dapi, cmap, norm, dapi_cmap, dapi_norm, base_name, output_name, other_channel_name
 ):
     """
     Visualize the overlap detection results.
@@ -261,17 +294,17 @@ def visualize_dapi_overlap_results(
 
     # Original RFP
     axes[0, 1].imshow(original_rfp, cmap=cmap, norm=norm)
-    axes[0, 1].set_title("Original RFP")
+    axes[0, 1].set_title(f"Original {other_channel_name}")
 
     # Set DAPI=1 pixels to 2
     original_rfp[original_dapi == 1] = 2
 
     axes[1, 0].imshow(original_rfp, cmap=cmap, norm=norm)
-    axes[1, 0].set_title("DAPI overlaid with RFP")
+    axes[1, 0].set_title(f"DAPI overlaid with {other_channel_name}")
 
     # Result with removed cells highlighted
     axes[1, 1].imshow(updated_dapi, cmap=dapi_cmap, norm=dapi_norm)
-    axes[1, 1].set_title("Updated DAPI (Red=removed cells)")
+    axes[1, 1].set_title("Updated DAPI")
     legend_elements = []
     for cell_type, color in CMAP.items():
         if cell_type in ["Background"]:  # Skip background color
@@ -285,7 +318,7 @@ def visualize_dapi_overlap_results(
 
     plt.tight_layout()
     plt.subplots_adjust(top=0.95, bottom=0.05)
-    plt.savefig(f"{output_name}_dapi_rfp_overlap.png")
+    plt.savefig(f"{output_name}_dapi_{other_channel_name}_overlap.png")
     plt.close()
 
 
@@ -333,8 +366,8 @@ def create_channel_plots(
     # axes[0, 1].set_title(f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA_C3M10 / (PX_TO_UM_CONV**2):.2f}")
     # 3D05 + C3M10 title
     axes[0, 1].set_title(
-        f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA_3D05 / (PX_TO_UM_CONV**2):.2f} (3D05) "  
-        f"and >{MIN_CELL_AREA_C3M10 / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
+        f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA['3D05'] / (PX_TO_UM_CONV**2):.2f} (3D05) "  
+        f"and >{MIN_CELL_AREA['C3M10'] / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
     
     min_cluster_area = MIN_CLUSTER_AREA[strain] / (PX_TO_UM_CONV**2)
     axes[1, 0].imshow(denoised_arr, cmap=cmap, norm=norm)
@@ -343,8 +376,8 @@ def create_channel_plots(
     # C3M10 title
     # axes[1, 0].set_title(f"Cell Positions (where aggregates >{MIN_CLUSTER_AREA_C3M10 / (PX_TO_UM_CONV**2):.2f}")
     # 3D05 + C3M10 title
-    axes[1, 0].set_title(f"Cell Positions (where aggregates >{MIN_CLUSTER_AREA_3D05 / (PX_TO_UM_CONV**2):.2f} (3D05) " 
-                         f"and >{MIN_CLUSTER_AREA_C3M10 / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
+    axes[1, 0].set_title(f"Cell Positions (where aggregates >{MIN_CLUSTER_AREA['3D05'] / (PX_TO_UM_CONV**2):.2f} (3D05) " 
+                         f"and >{MIN_CLUSTER_AREA['C3M10'] / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
 
     # Plots cell positions if cell_positions is not None and there are any cell positions
     if cell_positions is not None and any(cell_positions.values()):
@@ -364,10 +397,10 @@ def create_channel_plots(
     # Create legend patches for each color in the colormap
     legend_elements = []
     for cell_type, color in CMAP.items():
-        if cell_type in ["Background"]:  # Skip background color
+        if (cell_type in ["Background"]) or (cell_type in ["Overlap"] and overlap_arr is None):  # Skip background color
             continue
-        if cell_type in ["Overlap"] and overlap_arr is None:
-            continue
+        # if cell_type in ["Overlap"] and overlap_arr is None:
+        #     continue
         legend_elements.append(plt.Rectangle((0, 0), 1, 1, facecolor=color, label=cell_type))
 
     # Add red dot for cell positions and blue dot for clusters
@@ -422,7 +455,7 @@ def process_single_h5_file(cur_folder, file_path):
     base_name = full_file_path.replace(".h5", "")
     processed_folder = cur_folder.split("/")[-1]
 
-    cell_types = get_cell_types(file_path)
+    cell_types = get_cell_type_map(file_path)
     if len(cell_types) == 0:
         raise ValueError("Cell type not found in file path")
     cmap, norm = get_color_map(cell_types)
@@ -458,33 +491,46 @@ def process_single_h5_file(cur_folder, file_path):
     write_cell_position_info(cell_positions, cell_clusters, cell_pos_file_name)
     write_density_info(density_info_file_path, processed_folder, cell_density, cell_area_ratio, cell_count)
 
+def get_strains_from_file(file_name):
+    cell_types = []
+    for cell_type in CELL_TYPES:
+        if cell_type in file_name.upper():
+            cell_types.append(cell_type)
+    return cell_types
+
+def get_channel_from_file(file_name):
+    channels = []
+    for channel in CHANNELS:
+        if channel in file_name.upper():
+            channels.append(channel)
+    if len(channels) > 1:
+        raise ValueError("More than one channel found in file path")
+    return channels[0]
 
 # Checks file path for cell types and channels
 # If just cell_types are found, returns a list of cell types found
 # If a channel is found, returns a list with the single cell type that corresponds to that channel
 # If more than one channel is found, raises an error
 # Returns dictionary mapping cell value to cell type i.e. {1: "3D05", 2: "6B07", 3: "C3M10", 4: "particle", 5: "background"}
-def get_cell_types(file_path, use_channels=False):
-    cell_types = []
-    channels = []
-    for cell_type in CELL_TYPES:
-        if cell_type in file_path.upper():
-            cell_types.append(cell_type)
-    if use_channels:
-        for channel in CHANNELS:
-            if channel in file_path.upper():
-                channels.append(channel)
-        if len(channels) > 1:
-            raise ValueError("More than one channel found in file path")
-        if len(channels) == 1:
-            cell_types = [CHANNEL_MAP[channels[0]]]
+def get_cell_type_map(file_path):
+    cell_types = get_strains_from_file(file_path)
     cell_type_map = {}
     for i, cell_type in enumerate(cell_types):
         cell_type_map[i + 1] = cell_type
     cell_type_map[i + 2] = "Particle"
     cell_type_map[i + 3] = "Background"
-    cell_type_map[i + 4] = "Overlap"
+    # cell_type_map[i + 4] = "Overlap"
     return cell_type_map
+
+# Checks file path for cell types and channels
+# If just cell_types are found, returns a list of cell types found
+# If a channel is found, returns a list with the single cell type that corresponds to that channel
+# If more than one channel is found, raises an error
+# Returns dictionary mapping cell value to cell type i.e. {1: "3D05", 2: "6B07", 3: "C3M10", 4: "particle", 5: "background"}
+def get_cell_type_map_from_channel(strain_types, channel):
+    if (strain_types == ["6B07"] and channel == "RFP") or (strain_types == ["6B07", "C3M10"] and channel == "RFP"):
+        return {1: "Particle", 2: "Background"}
+    return {1: CHANNEL_MAP[channel], 2: "Particle", 3: "Background"}
 
 
 def get_color_map(cell_type_map):
@@ -590,8 +636,8 @@ def create_single_plots(
     # axes[0, 1].set_title(f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA_C3M10 / (PX_TO_UM_CONV**2):.2f}")
     # 3D05 + C3M10 title
     axes[0, 1].set_title(
-        f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA_3D05 / (PX_TO_UM_CONV**2):.2f} (3D05) "  
-        f"and >{MIN_CELL_AREA_C3M10 / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
+        f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA['3D05'] / (PX_TO_UM_CONV**2):.2f} (3D05) "  
+        f"and >{MIN_CELL_AREA['C3M10'] / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
 
     axes[1, 0].imshow(denoised_arr, cmap=cmap, norm=norm)
     # 3D05 title
@@ -599,9 +645,9 @@ def create_single_plots(
     # C3M10 title
     # axes[1, 0].set_title(f"Cell Positions (where aggregates >{MIN_CLUSTER_AREA_C3M10 / (PX_TO_UM_CONV**2):.2f}")
     # 3D05 + C3M10 title
-    axes[1, 0].set_title(f"Cell Positions (where aggregates >{MIN_CLUSTER_AREA_3D05 / (PX_TO_UM_CONV**2):.2f} (3D05) " 
-                         f"and >{MIN_CLUSTER_AREA_C3M10 / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
-    
+    axes[1, 0].set_title(f"Cell Positions (where aggregates >{MIN_CLUSTER_AREA['3D05'] / (PX_TO_UM_CONV**2):.2f} (3D05) " 
+                         f"and >{MIN_CLUSTER_AREA['C3M10'] / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
+
     # Plots cell positions if cell_positions is not None and there are any cell positions
     if cell_positions is not None and any(cell_positions.values()):
         all_positions = np.array(
@@ -714,16 +760,16 @@ def recreate_particle_area(ds_arr, cell_types, particle_area):
     """
     # Find the key corresponding to the "particle" value in cell_types
     particle_label = None
-    overlap_label = None
+    # overlap_label = None
     for key, value in cell_types.items():
         if value == "Particle":
             particle_label = key
-        if value == "Overlap":
-            overlap_label = key
+        # if value == "Overlap":
+        #     overlap_label = key
     for cell_type_label, cell_type in cell_types.items():
         if cell_type not in CELL_TYPES:
             continue
-        updated_ds_arr, overlap_area = fill_particle_area(ds_arr, particle_label, cell_type_label, overlap_label)
+        updated_ds_arr, overlap_area = fill_particle_area(ds_arr, particle_label, cell_type_label, overlap_label=particle_label)
         particle_area += overlap_area
         ds_arr = updated_ds_arr
     return ds_arr, particle_area
@@ -788,7 +834,7 @@ def fill_particle_area(ds_arr, particle_label, cell_label, overlap_label):
     # Create a copy of the original array to modify
     updated_ds_arr = ds_arr.copy()
 
-    # Change the values in the combined overlap areas to the overlap label
+    # Change the values in the combined overlap areas to the overlap label (just the particle label)
     updated_ds_arr[combined_overlap] = overlap_label
 
     return updated_ds_arr, np.sum(combined_overlap)

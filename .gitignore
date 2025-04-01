@@ -13,6 +13,7 @@ wheels/
 *.tif
 *.zip
 *.png
+*.jpg
 *.ilp
 *.csv
 *.h5
