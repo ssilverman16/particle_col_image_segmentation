@@ -18,6 +18,16 @@ To update: how script parses different .h5 files and determines which strain is 
 Cells and channels:
 Extract strain types from folder name (Happens at top level)
 Extract channel from file name (Happens for each file)
+
+Add ability to see which cells are near other cells and if they are, add them as part of a cluster.
+AKA if a cell from a certain strain is within a certain distance of a cell from another strain, then include both of them as part of a cluster.
+Start with non inter-cell comparisons
+Want output to be a csv with with: centroid_x, centroid_y, type (Cell_type or combined), area (that cell's area or for combined, the area of each cell type+combined)
+Get the centroids for all of the regions and then can combine if they are close enough for cell types comparison. Then do the same for combined.
+When channels are broken up, want to take the combined image and run it through this.
+Add column for cell area ratio which is the area of the cell divided by the area of the particle.
+Check combined cell areas
+Maybe try to get ride of the stuff that's not cell ()
 """
 
 import csv
@@ -27,9 +37,11 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import colors
+from matplotlib.patches import Rectangle
 from scipy import ndimage
 from scipy.ndimage import binary_fill_holes, median_filter
 from skimage.measure import label, regionprops
+from skimage.measure._regionprops import RegionProperties
 from skimage.morphology import binary_dilation, disk
 
 # Define constants
@@ -47,7 +59,9 @@ CHANNELS = ["RFP", "DAPI", "GFP"]
 CHANNEL_MAP = {"RFP": "3D05", "DAPI": "6B07", "GFP": "C3M10"}
 STRAIN_MAP = {"3D05": "RFP", "6B07": "DAPI", "C3M10": "GFP"}
 
-TOP_LEVEL_FOLDER = "/Volumes/WD_Elements/3D05_C3M10/120h"  # Change this to the folder you want to process but you have to include the top level strain folder
+# TOP_LEVEL_FOLDER = "/Volumes/WD_Elements/3D05_C3M10/120h"  # Change this to the folder you want to process but you have to include the top level strain folder
+# TOP_LEVEL_FOLDER = "3D05_6B07_test/24h/Tp_3D05_C3M10_1_24h_60X_15"
+TOP_LEVEL_FOLDER = "files_w_6B07"
 MIN_CELL_AREA = {"3D05": 20, "6B07": 20, "C3M10": 20}  # Change this to the minimum area of a cell (in sq. pixels)
 
 MIN_CLUSTER_AREA = {
@@ -63,6 +77,7 @@ DILATION_RADIUS = (
 DISTANCE_THRESHOLD = (
     2  # Change this to the distance threshold you want to use for the distance transform. This does same as above
 )
+CELL_CLUSTER_DISTANCE_THRESHOLD = 10
 DAPI_RFP_OVERLAP_THRESHOLD = 0.1  # Change this to the threshold you want to use for the DAPI-RFP overlap.
 PX_TO_UM_CONV = 9.95  # Change this to the conversion factor for pixels --> microns
 
@@ -104,10 +119,10 @@ def process_multiple_h5_files(cur_folder, h5_files):
             a_group_key = next(iter(f.keys()))  # retrieve first key in the HDF5 file
             ds_arr = f[a_group_key][()]  # returns as a numpy array
         ds_arr = normalize_ds_arr(ds_arr)
-        ds_arr_denoised = median_filter(ds_arr, size=DENOISE_SIZE)
+        ds_arr_denoised: np.ndarray = median_filter(ds_arr, size=DENOISE_SIZE)
 
         print("Getting cell positions and areas")
-        cell_positions, cell_clusters, particle_area = get_cell_positions_and_areas(ds_arr_denoised, cell_types)
+        cell_positions, cell_clusters, particle_area, _ = get_cell_positions_and_areas(ds_arr_denoised, cell_types)
         print("Finished getting cell positions")
         channel_ds_arrs[channel] = ds_arr_denoised
         if channel == "RFP":  # Check if the first cell type (key 1) is 3D05
@@ -142,7 +157,7 @@ def process_multiple_h5_files(cur_folder, h5_files):
     # Combine DAPI and RFP, then get new DAPI cell positions and clusters. Finally, update master cell positions, clusters, and areas.
     # Write raw cell position info to csv file
     write_cell_position_info(
-        master_cell_pos, master_cell_clusters, cell_pos_raw_file_name
+        master_cell_pos, master_cell_clusters, cell_pos_raw_file_name, rfp_particle_area
     )  # Uncomment to write raw cell position info to csv file
     cmap, norm = get_color_map(BASE_TYPE_MAP)
     if len(cell_strains) > 1:
@@ -150,21 +165,21 @@ def process_multiple_h5_files(cur_folder, h5_files):
         other_channel_name = "GFP" if cell_strains == ["6B07", "C3M10"] else "RFP"
 
         dapi_updated = combine_cell_positions_and_clusters(channel_ds_arrs["DAPI"], other_channel)
-        dapi_cell_positions, dapi_cell_clusters, _ = get_cell_positions_and_areas(dapi_updated, dapi_cell_types)
+        dapi_cell_positions, dapi_cell_clusters, _, _ = get_cell_positions_and_areas(dapi_updated, dapi_cell_types)
         master_cell_pos["6B07"] = dapi_cell_positions["6B07"]
         master_cell_clusters["6B07"] = dapi_cell_clusters["6B07"]
         dapi_cmap, dapi_norm = get_color_map(dapi_cell_types)
 
         print(f"Visualizing DAPI-{other_channel_name} overlap")
         # The other channel (RFP/GFP) will be the base channel, so we need to update the other image to have the required cell type numbers to the CELL_TYPES numbers
-        # 
-        
+        #
+
         other_updated = other_channel.copy()
         other_updated[other_updated == 3] = 5  # Background
         other_updated[other_updated == 2] = 4  # Particle
         if other_channel_name == "GFP":
             other_updated[other_updated == 1] = 3
-        
+
         visualize_dapi_overlap_results(
             channel_ds_arrs["DAPI"],
             other_updated,
@@ -187,6 +202,9 @@ def process_multiple_h5_files(cur_folder, h5_files):
     rfp_base_arr = channel_ds_arrs["RFP"].copy()
     get_rfp_base_arr(rfp_base_arr, cell_strains)
     combined_channels = combine_channels(rfp_base_arr, channel_ds_arrs, cell_strains)
+    print("Creating merged plots")
+    _, _, _, merged_clusters = get_cell_positions_and_areas(combined_channels, BASE_TYPE_MAP, merged=True)
+    plot_original_vs_merged(combined_channels, merged_clusters, master_cell_clusters, BASE_TYPE_MAP, processed_folder, base_name)
     output_name = f"{base_name}_combined_channels.png"
     create_plot(
         combined_channels,
@@ -197,8 +215,11 @@ def process_multiple_h5_files(cur_folder, h5_files):
         cell_clusters=master_cell_clusters,
         title=f"{processed_folder} Combined Channels",
     )
+
     # Write combined cell position csv file and write to CSV file
-    write_cell_position_info(master_cell_pos, master_cell_clusters, cell_pos_combined_file_name)
+    write_cell_position_info(master_cell_pos, master_cell_clusters, cell_pos_combined_file_name, rfp_particle_area)
+    merged_file_name = cell_pos_combined_file_name.replace("_cell_pos_combined.csv", "_merged_cell_pos.csv")
+    write_merged_cell_position_info(merged_clusters, merged_file_name, rfp_particle_area)
 
 def get_rfp_base_arr(rfp_arr, cell_strains):
     if cell_strains == ["6B07"] or cell_strains == ["6B07", "C3M10"]:
@@ -318,7 +339,7 @@ def visualize_dapi_overlap_results(
 
     plt.tight_layout()
     plt.subplots_adjust(top=0.95, bottom=0.05)
-    plt.savefig(f"{output_name}_dapi_{other_channel_name}_overlap.png")
+    plt.savefig(f"{output_name}_dapi_{other_channel_name}_overlap.png", dpi=300)
     plt.close()
 
 
@@ -368,7 +389,6 @@ def create_channel_plots(
     axes[0, 1].set_title(
         f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA['3D05'] / (PX_TO_UM_CONV**2):.2f} (3D05) "  
         f"and >{MIN_CELL_AREA['C3M10'] / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
-    
     min_cluster_area = MIN_CLUSTER_AREA[strain] / (PX_TO_UM_CONV**2)
     axes[1, 0].imshow(denoised_arr, cmap=cmap, norm=norm)
     # 3D05 title
@@ -436,127 +456,8 @@ def create_channel_plots(
 
     plt.tight_layout()
     plt.subplots_adjust(top=0.95, bottom=0.05)
-    plt.savefig(f"{output_name}_plots.png")
+    plt.savefig(f"{output_name}_plots.png", dpi=300)
     plt.close()
-
-
-def get_pos_and_density_file_names(cur_folder):
-    cur_folder_split = cur_folder.split("/")
-    density_info_file_name = f"{cur_folder_split[-3]}_{cur_folder_split[-2]}_cell_density_info.csv"
-    density_info_file_path = os.path.join(cur_folder, "..", density_info_file_name)
-    cell_pos_file_name = os.path.join(cur_folder, f"{cur_folder_split[-1]}_cell_pos.csv")
-    return density_info_file_path, cell_pos_file_name
-
-
-def process_single_h5_file(cur_folder, file_path):
-    print("Processing file: ", file_path)
-    full_file_path = os.path.join(cur_folder, file_path)
-    density_info_file_path, cell_pos_file_name = get_pos_and_density_file_names(cur_folder)
-    base_name = full_file_path.replace(".h5", "")
-    processed_folder = cur_folder.split("/")[-1]
-
-    cell_types = get_cell_type_map(file_path)
-    if len(cell_types) == 0:
-        raise ValueError("Cell type not found in file path")
-    cmap, norm = get_color_map(cell_types)
-
-    with h5py.File(full_file_path, "r") as f:
-        a_group_key = next(iter(f.keys()))  # retrieve first key in the HDF5 file
-        ds_arr = f[a_group_key][()]  # returns as a numpy array
-    ds_arr = normalize_ds_arr(ds_arr)
-    ds_arr_denoised = median_filter(ds_arr, size=DENOISE_SIZE)
-
-    # Get cell positions and densities, note that these are dictionaries mapping cell type to an array of values, or single value for densities
-    print("Getting cell positions and densities")
-    cell_positions, cell_clusters, particle_area = get_cell_positions_and_areas(ds_arr_denoised, cell_types)
-    cell_count, cell_density, cell_area_ratio = get_cell_counts_and_densities(
-        cell_positions, cell_clusters, particle_area
-    )
-    ds_arr_recreated, particle_area = recreate_particle_area(ds_arr_denoised, cell_types, particle_area)
-
-    # Create plots, write position and density info to csv
-    print("Creating plots")
-    create_single_plots(
-        ds_arr,
-        cmap,
-        norm,
-        processed_folder,
-        base_name,
-        ds_arr_denoised,
-        ds_arr_recreated,
-        cell_positions=cell_positions,
-        cell_clusters=cell_clusters,
-    )
-    print("Writing position and density info to csv")
-    write_cell_position_info(cell_positions, cell_clusters, cell_pos_file_name)
-    write_density_info(density_info_file_path, processed_folder, cell_density, cell_area_ratio, cell_count)
-
-def get_strains_from_file(file_name):
-    cell_types = []
-    for cell_type in CELL_TYPES:
-        if cell_type in file_name.upper():
-            cell_types.append(cell_type)
-    return cell_types
-
-def get_channel_from_file(file_name):
-    channels = []
-    for channel in CHANNELS:
-        if channel in file_name.upper():
-            channels.append(channel)
-    if len(channels) > 1:
-        raise ValueError("More than one channel found in file path")
-    return channels[0]
-
-# Checks file path for cell types and channels
-# If just cell_types are found, returns a list of cell types found
-# If a channel is found, returns a list with the single cell type that corresponds to that channel
-# If more than one channel is found, raises an error
-# Returns dictionary mapping cell value to cell type i.e. {1: "3D05", 2: "6B07", 3: "C3M10", 4: "particle", 5: "background"}
-def get_cell_type_map(file_path):
-    cell_types = get_strains_from_file(file_path)
-    cell_type_map = {}
-    for i, cell_type in enumerate(cell_types):
-        cell_type_map[i + 1] = cell_type
-    cell_type_map[i + 2] = "Particle"
-    cell_type_map[i + 3] = "Background"
-    # cell_type_map[i + 4] = "Overlap"
-    return cell_type_map
-
-# Checks file path for cell types and channels
-# If just cell_types are found, returns a list of cell types found
-# If a channel is found, returns a list with the single cell type that corresponds to that channel
-# If more than one channel is found, raises an error
-# Returns dictionary mapping cell value to cell type i.e. {1: "3D05", 2: "6B07", 3: "C3M10", 4: "particle", 5: "background"}
-def get_cell_type_map_from_channel(strain_types, channel):
-    if (strain_types == ["6B07"] and channel == "RFP") or (strain_types == ["6B07", "C3M10"] and channel == "RFP"):
-        return {1: "Particle", 2: "Background"}
-    return {1: CHANNEL_MAP[channel], 2: "Particle", 3: "Background"}
-
-
-def get_color_map(cell_type_map):
-    cell_colors = []
-    bounds = []
-    for cell_num, cell_type in cell_type_map.items():
-        cell_colors.append(CMAP[cell_type])
-        bounds.append(cell_num - 0.5)
-    bounds.append(len(cell_type_map) + 0.5)
-    cmap = colors.ListedColormap(cell_colors)
-    norm = colors.BoundaryNorm(bounds, cmap.N)
-    return cmap, norm
-
-
-def normalize_ds_arr(ds_arr):
-    # If shape is (2048,2048,1)
-    if ds_arr.shape[-1] == 1:
-        return np.squeeze(ds_arr)  # Removes single-dimensional entries
-    # If shape is (1,2048,2048)
-    elif ds_arr.shape[0] == 1:
-        return ds_arr[0]
-    elif ds_arr.shape[0] == 2048 and ds_arr.shape[1] == 2048:
-        return ds_arr
-    else:
-        raise ValueError(f"DS arr shape is not (2048,2048,1) or (1,2048,2048) or (2048,2048). Shape: {ds_arr.shape}")
-
 
 def create_plot(ds_arr, cmap, norm, file_name, cell_positions=None, cell_clusters=None, title=None):
     fig, ax = plt.subplots(figsize=(20, 20))
@@ -615,7 +516,7 @@ def create_plot(ds_arr, cmap, norm, file_name, cell_positions=None, cell_cluster
         handles=legend_elements, loc="center", bbox_to_anchor=(0.5, 0.08), ncol=len(legend_elements), frameon=False
     )
 
-    fig.savefig(file_name, bbox_inches="tight")
+    fig.savefig(file_name, bbox_inches="tight", dpi=300)
     plt.close()
 
 
@@ -706,11 +607,135 @@ def create_single_plots(
 
     plt.tight_layout()
     plt.subplots_adjust(top=0.95, bottom=0.05)
-    plt.savefig(f"{output_name}_plots.png")
+    print("Saving plots to", f"{output_name}_plots.png")
+    plt.savefig(f"{output_name}_plots.png", dpi=300)
     plt.close()
 
 
-def get_cell_positions_and_areas(z_slice, cell_types):
+def get_pos_and_density_file_names(cur_folder):
+    cur_folder_split = cur_folder.split("/")
+    density_info_file_name = f"{cur_folder_split[-3]}_{cur_folder_split[-2]}_cell_density_info.csv"
+    density_info_file_path = os.path.join(cur_folder, "..", density_info_file_name)
+    cell_pos_file_name = os.path.join(cur_folder, f"{cur_folder_split[-1]}_cell_pos.csv")
+    return density_info_file_path, cell_pos_file_name
+
+
+def process_single_h5_file(cur_folder, file_path):
+    print("Processing file: ", file_path)
+    full_file_path = os.path.join(cur_folder, file_path)
+    density_info_file_path, cell_pos_file_name = get_pos_and_density_file_names(cur_folder)
+    base_name = full_file_path.replace(".h5", "")
+    processed_folder = cur_folder.split("/")[-1]
+
+    cell_types = get_cell_type_map(file_path)
+    if len(cell_types) == 0:
+        raise ValueError("Cell type not found in file path")
+    cmap, norm = get_color_map(cell_types)
+
+    with h5py.File(full_file_path, "r") as f:
+        a_group_key = next(iter(f.keys()))  # retrieve first key in the HDF5 file
+        ds_arr = f[a_group_key][()]  # returns as a numpy array
+    ds_arr = normalize_ds_arr(ds_arr)
+    ds_arr_denoised = median_filter(ds_arr, size=DENOISE_SIZE)
+
+    # Get cell positions and densities, note that these are dictionaries mapping cell type to an array of values, or single value for densities
+    print("Getting cell positions and densities")
+    cell_positions, cell_clusters, particle_area, merged_clusters = get_cell_positions_and_areas(ds_arr_denoised, cell_types, merged=True)
+    cell_count, cell_density, cell_area_ratio = get_cell_counts_and_densities(
+        cell_positions, cell_clusters, particle_area
+    )
+    ds_arr_recreated, particle_area = recreate_particle_area(ds_arr_denoised, cell_types, particle_area)
+
+    # Create plots, write position and density info to csv
+    print("Creating plots")
+    create_single_plots(
+        ds_arr,
+        cmap,
+        norm,
+        processed_folder,
+        base_name,
+        ds_arr_denoised,
+        ds_arr_recreated,
+        cell_positions=cell_positions,
+        cell_clusters=cell_clusters,
+    )
+    plot_original_vs_merged(ds_arr_denoised, merged_clusters, cell_clusters, cell_types, processed_folder, base_name)
+    print("Writing position and density info to csv")
+    write_cell_position_info(cell_positions, cell_clusters, cell_pos_file_name, particle_area)
+    merged_file_name = cell_pos_file_name.replace("_cell_pos.csv", "_merged_cell_pos.csv")
+    write_merged_cell_position_info(merged_clusters, merged_file_name, particle_area)
+    write_density_info(density_info_file_path, processed_folder, cell_density, cell_area_ratio, cell_count)
+
+def get_strains_from_file(file_name):
+    cell_types = []
+    for cell_type in CELL_TYPES:
+        if cell_type in file_name.upper():
+            cell_types.append(cell_type)
+    return cell_types
+
+def get_channel_from_file(file_name):
+    channels = []
+    for channel in CHANNELS:
+        if channel in file_name.upper():
+            channels.append(channel)
+    if len(channels) > 1:
+        raise ValueError("More than one channel found in file path")
+    return channels[0]
+
+# Checks file path for cell types and channels
+# If just cell_types are found, returns a list of cell types found
+# If a channel is found, returns a list with the single cell type that corresponds to that channel
+# If more than one channel is found, raises an error
+# Returns dictionary mapping cell value to cell type i.e. {1: "3D05", 2: "6B07", 3: "C3M10", 4: "particle", 5: "background"}
+def get_cell_type_map(file_path: str) -> dict[int, str]:
+    cell_types = get_strains_from_file(file_path)
+    cell_type_map = {}
+    for i, cell_type in enumerate(cell_types):
+        cell_type_map[i + 1] = cell_type
+    cell_type_map[i + 2] = "Particle"
+    cell_type_map[i + 3] = "Background"
+    # cell_type_map[i + 4] = "Overlap"
+    return cell_type_map
+
+# Checks file path for cell types and channels
+# If just cell_types are found, returns a list of cell types found
+# If a channel is found, returns a list with the single cell type that corresponds to that channel
+# If more than one channel is found, raises an error
+# Returns dictionary mapping cell value to cell type i.e. {1: "3D05", 2: "6B07", 3: "C3M10", 4: "particle", 5: "background"}
+def get_cell_type_map_from_channel(strain_types, channel):
+    if (strain_types == ["6B07"] and channel == "RFP") or (strain_types == ["6B07", "C3M10"] and channel == "RFP"):
+        return {1: "Particle", 2: "Background"}
+    return {1: CHANNEL_MAP[channel], 2: "Particle", 3: "Background"}
+
+
+def get_color_map(cell_type_map):
+    cell_colors = []
+    bounds = []
+    for cell_num, cell_type in cell_type_map.items():
+        cell_colors.append(CMAP[cell_type])
+        bounds.append(cell_num - 0.5)
+    bounds.append(len(cell_type_map) + 0.5)
+    cmap = colors.ListedColormap(cell_colors)
+    norm = colors.BoundaryNorm(bounds, cmap.N)
+    return cmap, norm
+
+
+def normalize_ds_arr(ds_arr) -> np.ndarray:
+    # If shape is (2048,2048,1)
+    if ds_arr.shape[-1] == 1:
+        return np.squeeze(ds_arr)  # Removes single-dimensional entries
+    # If shape is (1,2048,2048)
+    elif ds_arr.shape[0] == 1:
+        return ds_arr[0]
+    elif ds_arr.shape[0] == 2048 and ds_arr.shape[1] == 2048:
+        return ds_arr
+    else:
+        raise ValueError(f"DS arr shape is not (2048,2048,1) or (1,2048,2048) or (2048,2048). Shape: {ds_arr.shape}")
+
+
+
+
+def get_cell_positions_and_areas(z_slice: np.ndarray, cell_types: dict[int, str], merged: bool = False):
     label_im = label(
         z_slice
     )  # converts ds_arr into a labeled image where each connected region gets a unique integer label
@@ -731,13 +756,14 @@ def get_cell_positions_and_areas(z_slice, cell_types):
                 particle_area += region.area
             continue
         # Handle cell cases
+        min_cell_area = MIN_CELL_AREA[cell_type]
+        min_cluster_area = MIN_CLUSTER_AREA[cell_type]
         if cell_type not in cell_pos:
             # Initialize cell area, positions, and clusters for this cell type
             cell_pos[cell_type] = []
             cell_clusters[cell_type] = []
-        min_cell_area = MIN_CELL_AREA[cell_type]
-        min_cluster_area = MIN_CLUSTER_AREA[cell_type]
         if region.area >= min_cell_area and region.area < min_cluster_area:
+            # cell_images[cell_type]
             cell_pos[cell_type].append(region)  # if true, stores the region
         if region.area >= min_cluster_area:
             cell_clusters[cell_type].append(region)
@@ -746,11 +772,156 @@ def get_cell_positions_and_areas(z_slice, cell_types):
     cell_area_averages = {}
     for cell_type, cell_array in cell_pos.items():
         cell_area_averages[cell_type] = np.average([cell.area for cell in cell_array])
-    for cell_Type, cluster_array in cell_clusters.items():
+    for cell_type, cluster_array in cell_clusters.items():
         for cluster in cluster_array:
-            cluster.cells = int(cluster.area // cell_area_averages[cell_Type])
+            cluster.cells = int(cluster.area // cell_area_averages[cell_type])
 
-    return cell_pos, cell_clusters, particle_area
+    # Can create a binary image of just that cell type at a time. For the combined will have to set anything that is equal to a cell type to be true.
+    if merged:
+        merged_clusters, _ = get_cell_clusters_from_distances(z_slice, cell_pos, cell_clusters, cell_types)
+    else:
+        merged_clusters = {}
+
+    return cell_pos, cell_clusters, particle_area, merged_clusters
+
+def get_cell_clusters_from_distances(z_slice: np.ndarray, cell_pos: list[RegionProperties], cell_clusters: list[RegionProperties], cell_types: dict[int, str]):
+    # Combine both together
+    combined = {}
+    all_keys = set(cell_pos) | set(cell_clusters)
+    for key in all_keys:
+        combined[key] = cell_pos.get(key, []) + cell_clusters.get(key, [])
+
+    # Combine images and get the regions for only the same cell types first
+    merged_regions = {}
+    merged_images = {}
+    img_vals = []
+    combined_regions = []
+    for cell_type, cell_regions in combined.items():
+        cell_img_val = 0
+        binary_image = np.zeros_like(z_slice, dtype=bool)
+        for cell_val, cell_temp_type in cell_types.items():
+            if cell_temp_type == cell_type:
+                cell_img_val = cell_val
+                break
+        img_vals.append(cell_img_val)
+        combined_regions.extend(cell_regions)
+        binary_image = z_slice == cell_img_val
+        merged_regions[cell_type], merged_images[cell_type] = get_merged_regions(binary_image, cell_regions)
+
+    # Now processing the combined case
+    combined_image = np.zeros_like(z_slice, dtype=bool)
+    for img_val in img_vals:
+        combined_image |= (z_slice == img_val)
+    # combined_labels = label(combined_image)
+    # initial_combined_regions = regionprops(combined_labels)
+
+    merged_regions["combined"], merged_images["combined"] = get_merged_regions(combined_image, combined_regions)
+
+    return merged_regions, merged_images
+
+def get_merged_regions(binary_image: np.ndarray, og_cell_regions: list) -> np.ndarray:
+    struct_elem = disk(CELL_CLUSTER_DISTANCE_THRESHOLD //2)
+    dilated = binary_dilation(binary_image, struct_elem)
+    dilated_labels = label(dilated)
+    processed_dilated_labels = set()
+    merged_regions = []
+    merged_image = np.zeros_like(binary_image, dtype=bool)
+    # for region in og_cell_regions:
+    #     y, x = region.centroid
+    #     y, x = int(y), int(x)
+    #     if 0 <= y < dilated_labels.shape[0] and 0 <= x < dilated_labels.shape[1]:
+    #         dilated_label_value = dilated_labels[y, x]
+    #         if dilated_label_value > 0 and dilated_label_value not in processed_dilated_labels:
+    #             # Add this dilated region to the final image
+    #             merged_image |= (dilated_labels == dilated_label_value)
+    #             processed_dilated_labels.add(dilated_label_value)
+
+    for region in og_cell_regions:
+        y, x = region.centroid
+        y, x = int(y), int(x)
+        if 0 <= y < dilated_labels.shape[0] and 0 <= x < dilated_labels.shape[1]:
+            dilated_label_value = dilated_labels[y, x]
+            if dilated_label_value > 0 and dilated_label_value not in processed_dilated_labels:
+                # Find all regions that share the same dilated label
+                touching_regions = [
+                    r for r in og_cell_regions if dilated_labels[int(r.centroid[0]), int(r.centroid[1])] == dilated_label_value
+                ]
+
+                # Combine properties of touching regions
+                combined_area = sum(r.area for r in touching_regions)
+                combined_centroid = np.average(
+                    [r.centroid for r in touching_regions], axis=0, weights=[r.area for r in touching_regions]
+                )
+                # Calculate the bounding box for the merged region
+                minr = min(r.bbox[0] for r in touching_regions)
+                minc = min(r.bbox[1] for r in touching_regions)
+                maxr = max(r.bbox[2] for r in touching_regions)
+                maxc = max(r.bbox[3] for r in touching_regions)
+                bbox = (minr, minc, maxr, maxc)
+
+                # Create a new merged region-like object
+                merged_regions.append({
+                    "area": combined_area,
+                    "centroid": combined_centroid,
+                    "regions": touching_regions,
+                    "bbox": bbox,
+                })
+
+                # Mark this dilated label as processed
+                processed_dilated_labels.add(dilated_label_value)
+
+                # Update the merged image
+                merged_image |= (dilated_labels == dilated_label_value)
+        # Fill holes in the merged regions
+    merged_image = binary_fill_holes(merged_image)
+    # merged_labels = label(merged_image)
+    # merged_regions = regionprops(merged_labels)
+    return merged_regions, merged_image
+
+def plot_original_vs_merged(original_image: np.ndarray, merged_regions: dict[str, list[RegionProperties]], cell_clusters: dict[str, list[RegionProperties]], cell_types: list[int, str], title_name: str, base_name: str):
+    rows = 2 if len(merged_regions) > 2 else 1
+    fig = plt.figure(figsize=(16, 16))
+    if len(merged_regions) <= 2:
+        fig, axes = plt.subplots(1, len(merged_regions), figsize=(16, 16))
+    elif len(merged_regions) == 3:
+        gs = plt.GridSpec(2, 2, height_ratios=[1, 1])
+        ax1 = fig.add_subplot(gs[0, 0])  # Top left
+        ax2 = fig.add_subplot(gs[0, 1])  # Top right
+        ax3 = fig.add_subplot(gs[1, :])  # Bottom spanning both columns
+
+        # Convert to numpy array format for consistent indexing
+        axes = np.array([[ax1, ax2], [ax3, None]])
+    else:
+        # Create regular 2x2 grid
+        fig, axes = plt.subplots(2, 2, figsize=(16, 16))
+
+    fig.suptitle(f"{title_name} Merged Cell Positions", fontsize=20, y=0.98)
+
+    cmap, norm = get_color_map(cell_types)
+    # Plot each cell_type separately
+    for i, (cell_type, regions) in enumerate(merged_regions.items()):
+        ax = axes[i // 2, i % 2] if rows > 1 else axes[i]
+        ax.imshow(original_image, cmap=cmap, norm=norm)
+        ax.set_title(cell_type.title())
+        clusters = cell_clusters.get(cell_type, [])
+        for cluster in clusters:
+            minr, minc, maxr, maxc = cluster.bbox
+            rect = Rectangle((minc, minr), maxc - minc, maxr - minr,
+                            fill=False, edgecolor="orange", linewidth=.5)
+            ax.add_patch(rect)
+
+        for region in regions:
+            if len(region["regions"]) == 1:
+                continue
+            minr, minc, maxr, maxc = region["bbox"]
+            rect = Rectangle((minc, minr), maxc - minc, maxr - minr,
+                            fill=False, edgecolor="green", linewidth=1)
+            ax.add_patch(rect)
+
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.95, bottom=0.05)
+    plt.savefig(f"{base_name}_cell_cluster_pos.png", dpi=300)
+    plt.close()
 
 
 def recreate_particle_area(ds_arr, cell_types, particle_area):
@@ -840,7 +1011,7 @@ def fill_particle_area(ds_arr, particle_label, cell_label, overlap_label):
     return updated_ds_arr, np.sum(combined_overlap)
 
 
-def get_cell_counts_and_densities(cell_pos, cell_clusters, particle_area):
+def get_cell_counts_and_densities(cell_pos: dict[str, list[RegionProperties]], cell_clusters: dict[str, list[RegionProperties]], particle_area: float):
     # Calculate cell counts, density, and area ratios
     cell_count = {}
     cell_density = {}
@@ -863,26 +1034,41 @@ def get_cell_counts_and_densities(cell_pos, cell_clusters, particle_area):
     return cell_count, cell_density, cell_area_ratio
 
 
-def get_type(region, data):
+def get_type(region: RegionProperties, data: np.ndarray) -> int:
     point = region.coords[0]  # retrieves one coordinate (first pixel of the region)
     point_val = data[point[0], point[1]]
     return point_val
 
 
-def write_cell_position_info(cell_positions, cell_clusters, csv_output_file):
+def write_cell_position_info(cell_positions, cell_clusters, csv_output_file, particle_area: float):
+    particle_area = particle_area / (PX_TO_UM_CONV**2)  # convert pixels^2 --> microns^2
     with open(csv_output_file, "w") as f:
         writer = csv.writer(f)
-        writer.writerow(["strain", "cell_type", "x_pos", "y_pos", "cell_area", "cell_count"])
+        writer.writerow(["strain", "cell_type", "x_pos", "y_pos", "cell_area", "cell_area_ratio", "cell_count"])
         for strain_type, pos in cell_positions.items():
             for p in pos:
                 cell_pos = p.centroid
                 area = p.area / (PX_TO_UM_CONV**2)  # convert pixels^2 --> microns^2
-                writer.writerow([strain_type, "cell", round(cell_pos[1], 2), round(cell_pos[0], 2), area, 1])
+                area_ratio = area / particle_area
+                writer.writerow([strain_type, "cell", round(cell_pos[1], 2), round(cell_pos[0], 2), round(area, 5), round(area_ratio, 8), 1])
         for strain_type, cluster in cell_clusters.items():
             for c in cluster:
                 pos = c.centroid
                 area = c.area / (PX_TO_UM_CONV**2)  # convert pixels^2 --> microns^2
-                writer.writerow([strain_type, "cluster", round(pos[1], 2), round(pos[0], 2), area, c.cells])
+                area_ratio = area / particle_area
+                writer.writerow([strain_type, "cluster", round(pos[1], 2), round(pos[0], 2), area, round(area_ratio, 8), c.cells])
+
+def write_merged_cell_position_info(merged_clusters: dict[str, RegionProperties], csv_output_file, particle_area: float):
+    particle_area = particle_area / (PX_TO_UM_CONV**2)  # convert pixels^2 --> microns^2
+    with open(csv_output_file, "w") as f:
+        writer = csv.writer(f)
+        writer.writerow(["strain_type", "x_pos", "y_pos", "cell_area", "cell_area_ratio", "cell_num"])
+        for strain_type, pos in merged_clusters.items():
+            for p in pos:
+                cell_pos = p["centroid"]
+                area = p["area"] / (PX_TO_UM_CONV**2)  # convert pixels^2 --> microns^2
+                area_ratio = area / particle_area
+                writer.writerow([strain_type, round(cell_pos[1], 2), round(cell_pos[0], 2), round(area, 5), round(area_ratio, 8), len(p["regions"])])
 
 
 def write_density_info(csv_output_file, h5_folder, cell_density, cell_area_ratio, cell_count):
