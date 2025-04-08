@@ -59,9 +59,9 @@ CHANNELS = ["RFP", "DAPI", "GFP"]
 CHANNEL_MAP = {"RFP": "3D05", "DAPI": "6B07", "GFP": "C3M10"}
 STRAIN_MAP = {"3D05": "RFP", "6B07": "DAPI", "C3M10": "GFP"}
 
-# TOP_LEVEL_FOLDER = "/Volumes/WD_Elements/3D05_C3M10/120h"  # Change this to the folder you want to process but you have to include the top level strain folder
+TOP_LEVEL_FOLDER = "/Volumes/WD_Elements/C3M10"  # Change this to the folder you want to process but you have to include the top level strain folder
 # TOP_LEVEL_FOLDER = "3D05_6B07_test/24h/Tp_3D05_C3M10_1_24h_60X_15"
-TOP_LEVEL_FOLDER = "files_w_6B07"
+# TOP_LEVEL_FOLDER = "files_w_6B07"
 MIN_CELL_AREA = {"3D05": 20, "6B07": 20, "C3M10": 20}  # Change this to the minimum area of a cell (in sq. pixels)
 
 MIN_CLUSTER_AREA = {
@@ -77,7 +77,7 @@ DILATION_RADIUS = (
 DISTANCE_THRESHOLD = (
     2  # Change this to the distance threshold you want to use for the distance transform. This does same as above
 )
-CELL_CLUSTER_DISTANCE_THRESHOLD = 10
+CELL_CLUSTER_DISTANCE_THRESHOLD = 5
 DAPI_RFP_OVERLAP_THRESHOLD = 0.1  # Change this to the threshold you want to use for the DAPI-RFP overlap.
 PX_TO_UM_CONV = 9.95  # Change this to the conversion factor for pixels --> microns
 
@@ -381,23 +381,25 @@ def create_channel_plots(
 
     min_cell_area = MIN_CELL_AREA[strain] / (PX_TO_UM_CONV**2)
     axes[0, 1].imshow(denoised_arr, cmap=cmap, norm=norm)
+    axes[0, 1].set_title("Denoised image")
     # 3D05 title
     # axes[0, 1].set_title(f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA_3D05 / (PX_TO_UM_CONV**2):.2f}")
     # C3M10 title
     # axes[0, 1].set_title(f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA_C3M10 / (PX_TO_UM_CONV**2):.2f}")
     # 3D05 + C3M10 title
-    axes[0, 1].set_title(
-        f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA['3D05'] / (PX_TO_UM_CONV**2):.2f} (3D05) "  
-        f"and >{MIN_CELL_AREA['C3M10'] / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
-    min_cluster_area = MIN_CLUSTER_AREA[strain] / (PX_TO_UM_CONV**2)
+    # axes[0, 1].set_title(
+    #     f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA['3D05'] / (PX_TO_UM_CONV**2):.2f} (3D05) "  
+    #     f"and >{MIN_CELL_AREA['C3M10'] / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
+    # min_cluster_area = MIN_CLUSTER_AREA[strain] / (PX_TO_UM_CONV**2)
     axes[1, 0].imshow(denoised_arr, cmap=cmap, norm=norm)
+    axes[1, 0].set_title("Cell positions")
     # 3D05 title
     # axes[1, 0].set_title(f"Cell Positions (where aggregates >{MIN_CLUSTER_AREA_3D05 / (PX_TO_UM_CONV**2):.2f}") 
     # C3M10 title
     # axes[1, 0].set_title(f"Cell Positions (where aggregates >{MIN_CLUSTER_AREA_C3M10 / (PX_TO_UM_CONV**2):.2f}")
     # 3D05 + C3M10 title
-    axes[1, 0].set_title(f"Cell Positions (where aggregates >{MIN_CLUSTER_AREA['3D05'] / (PX_TO_UM_CONV**2):.2f} (3D05) " 
-                         f"and >{MIN_CLUSTER_AREA['C3M10'] / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
+    # axes[1, 0].set_title(f"Cell Positions (where aggregates >{MIN_CLUSTER_AREA['3D05'] / (PX_TO_UM_CONV**2):.2f} (3D05) " 
+    #                      f"and >{MIN_CLUSTER_AREA['C3M10'] / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
 
     # Plots cell positions if cell_positions is not None and there are any cell positions
     if cell_positions is not None and any(cell_positions.values()):
@@ -531,23 +533,25 @@ def create_single_plots(
     axes[0, 0].set_title("Raw segmentation")
 
     axes[0, 1].imshow(denoised_arr, cmap=cmap, norm=norm)
+    axes[0, 1].set_title("Denoised image")
     # 3D05 title
     # axes[0, 1].set_title(f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA_3D05 / (PX_TO_UM_CONV**2):.2f}")  
     # C3M10 title
     # axes[0, 1].set_title(f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA_C3M10 / (PX_TO_UM_CONV**2):.2f}")
     # 3D05 + C3M10 title
-    axes[0, 1].set_title(
-        f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA['3D05'] / (PX_TO_UM_CONV**2):.2f} (3D05) "  
-        f"and >{MIN_CELL_AREA['C3M10'] / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
+    # axes[0, 1].set_title(
+    #     f"Filtered w/denoise threshold={DENOISE_SIZE} and cell area >{MIN_CELL_AREA['3D05'] / (PX_TO_UM_CONV**2):.2f} (3D05) "  
+    #     f"and >{MIN_CELL_AREA['C3M10'] / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
 
     axes[1, 0].imshow(denoised_arr, cmap=cmap, norm=norm)
+    axes[1, 0].set_title("Cell positions")
     # 3D05 title
     # axes[1, 0].set_title(f"Cell Positions (where aggregates >{MIN_CLUSTER_AREA_3D05 / (PX_TO_UM_CONV**2):.2f}") 
     # C3M10 title
     # axes[1, 0].set_title(f"Cell Positions (where aggregates >{MIN_CLUSTER_AREA_C3M10 / (PX_TO_UM_CONV**2):.2f}")
     # 3D05 + C3M10 title
-    axes[1, 0].set_title(f"Cell Positions (where aggregates >{MIN_CLUSTER_AREA['3D05'] / (PX_TO_UM_CONV**2):.2f} (3D05) " 
-                         f"and >{MIN_CLUSTER_AREA['C3M10'] / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
+    # axes[1, 0].set_title(f"Cell Positions (where aggregates >{MIN_CLUSTER_AREA['3D05'] / (PX_TO_UM_CONV**2):.2f} (3D05) " 
+    #                      f"and >{MIN_CLUSTER_AREA['C3M10'] / (PX_TO_UM_CONV**2):.2f} $\mu$m$^2$ (C3M10)")
 
     # Plots cell positions if cell_positions is not None and there are any cell positions
     if cell_positions is not None and any(cell_positions.values()):
